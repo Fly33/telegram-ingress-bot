@@ -6,90 +6,9 @@ import struct
 import logging
 import logging.handlers
 import rsa
-from Crypto.Hash import SHA
 from Crypto.Random import random
-from aes_ige import AES_IGE
-
-def Int(size=32):
-    assert(size % 8 == 0)
-    size //= 8
-    class int_cl:
-        @classmethod
-        def Parse(cls, data, offset):
-            return (int.from_bytes(data[offset:offset+size], 'little'), size)
-        @classmethod
-        def Dump(cls, value):
-            return value.to_bytes(size, 'little')
-    return int_cl
-
-class Long(Int(64)):
-    pass
-
-class String:
-    @classmethod
-    def Parse(cls, data, offset):
-        ln = int.from_bytes(data[offset:offset+1], 'little')
-        if ln == 254:
-            ln = int.from_bytes(data[offset+1:offset+4], 'little')
-            return (data[offset+4:offset+4+ln], (((ln+4)-1)//4+1)*4)
-        else:
-            return (data[offset+1:offset+1+ln], (((ln+1)-1)//4+1)*4)
-    @classmethod
-    def Dump(cls, value):
-        if len(value) <= 253:
-            return len(value).to_bytes(1, 'little') + value + b'\0' * (3 - len(value) % 4)
-        return b'\xfe' + len(value).to_bytes(3, 'little') + value + b'\0' * (3 - (len(value)+3) % 4)
-
-class Double:
-    @classmethod
-    def Parse(cls, data, offset):
-        return (struct.unpack_from('d', data, offset)[0], 8)
-    @classmethod
-    def Dump(cls, value):
-        return struct.pack('d', value)
-
-def Tuple(*class_arg):
-    class tuple_cl:
-        @classmethod
-        def Parse(cls, data, offset):
-            result = []
-            reslen = 0
-            for t in class_arg:
-                dt, ln = t.Parse(data, offset+reslen)
-                result.append(dt)
-                reslen += ln
-            return (result, reslen)
-        @classmethod
-        def Dump(cls, *values):
-            if len(values) == 1 and isinstance(values[0], tuple):
-                return cls.Dump(*values[0])
-            result = b''
-            for arg, value in zip(class_arg, values):
-                result += arg.Dump(value)
-            return result
-    return tuple_cl
-
-def Vector(tipe):
-    class vector_cl:
-        @classmethod
-        def Parse(cls, data, offset):
-            result = []
-            reslen = 0
-            _, ln = Int().Parse(data, offset) # 0x1cb5c415
-            reslen += ln
-            count, ln = Int().Parse(data, offset+reslen)
-            reslen += ln
-            for _ in range(count):
-                dt, ln = tipe.Parse(data, offset+reslen)
-                result.append(dt)
-                reslen += ln
-            return (result, reslen)
-        @classmethod
-        def Dump(cls, value):
-            result = b''
-            for val in value:
-                result += tipe.Dump(val)
-    return vector_cl
+from cipher import *
+from format import *
 
 def decompose(n):
     x = 2
@@ -135,6 +54,7 @@ class Session:
         self.map = dict()
         self.data = bytes()
         self.message_id = 0
+        self.retry_id = 0
     
     def run(self):
         self.sock = socket.socket()
@@ -188,6 +108,12 @@ class Session:
             return self.process_server_DH_params_fail(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0])
         elif func == 0xd0e8075c:
             return self.process_server_DH_params_ok(*Tuple(Int(128), Int(128), String).Parse(message, 4)[0])
+        elif func == 0x3bcbf734:
+            return self.process_dh_gen_ok(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0]);
+        elif func == 0x46dc1fb9:
+            return self.process_dh_gen_retry(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0]);
+        elif func == 0xa69dae02:
+            return self.process_dh_gen_fail(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0]);
 
     def process_resPQ(self, nonce, server_nonce, pq, fingerprints):
         logging.debug("resPQ(nonce={!r}, server_nonce={!r}, pq={!r}, fingerprints={!r}".format(nonce, server_nonce, pq, fingerprints))
@@ -203,9 +129,7 @@ class Session:
             with open(self.PUBLIC_KEY_FILE, 'rb') as f:
                 self.server_public_key = rsa.PublicKey.load_pkcs1(f.read())
             # TODO: проверить отпечаток
-            sha = SHA.new()
-            sha.update(self.rsa_public_key(self.server_public_key.n.to_bytes(256, 'big'), self.server_public_key.e.to_bytes(4, 'big')))
-            sha = sha.digest()
+            sha = SHA1(self.rsa_public_key(self.server_public_key.n.to_bytes(256, 'big'), self.server_public_key.e.to_bytes(4, 'big')))
             logging.debug('Server public fingerprint: {!r}'.format(sha))
             for fp_id, fp in enumerate(fingerprints):
                 if fp == sha:
@@ -237,22 +161,18 @@ class Session:
         
         server_nonce_str = server_nonce.to_bytes(16, 'little')
         new_nonce_str = self.new_nonce.to_bytes(16, 'little')
-        sn_nn = SHA.new()
-        sn_nn.update(server_nonce_str + new_nonce_str)
-        nn_sn = SHA.new()
-        nn_sn.update(new_nonce_str + server_nonce_str)
-        nn_nn = SHA.new()
-        nn_nn.update(new_nonce_str + new_nonce_str)
-        tmp_aes_key = nn_sn.digest() + sn_nn.digest()[0:12]
-        tmp_aes_iv = sn_nn.digest()[12:20] + nn_nn.digest() + new_nonce_str[0:4]
+        sn_nn = SHA1(server_nonce_str + new_nonce_str)
+        nn_sn = SHA1(new_nonce_str + server_nonce_str)
+        nn_nn = SHA1(new_nonce_str + new_nonce_str)
+        tmp_aes_key = nn_sn + sn_nn[0:12]
+        tmp_aes_iv = sn_nn[12:20] + nn_nn + new_nonce_str[0:4]
         
         aes_ige = AES_IGE(tmp_aes_key, tmp_aes_iv)
         answer_with_hash = aes_ige.decrypt(encrypted_answer)
         answer, answer_len = Tuple(Int(), Int(128), Int(128), Int(), String, String, Int()).Parse(answer_with_hash[20:])
         
-        answer_sha = SHA.new()
-        answer_sha.update(answer_with_hash[20:20+answer_len])
-        if answer_with_hash[0:20] != answer_sha.digest():
+        answer_sha = SHA1(answer_with_hash[20:20+answer_len])
+        if answer_with_hash[0:20] != answer_sha:
             logging.error('Failed to decrypt answer')
             return False
         
@@ -273,10 +193,30 @@ class Session:
         
         self.auth_key = g_ab.to_bytes(256, 'big')
         
-        sha = SHA.new()
-        sha.update(self.auth_key)
-        self.auth_key_hash = sha.digest()
+        self.auth_key_hash = SHA1(self.auth_key)[0:8]
+        
+        data = self.client_DH_inner_data(nonce, server_nonce, self.retry_id, g_b.to_bytes(256, 'big'))
+        self.retry_id += 1
+        data_with_hash = SHA1(data) + data
+        rand_len = (15-(len(data_with_hash)-1)%16)
+        data_with_hash = data_with_hash + random.getrandbits(rand_len*8).to_bytes(rand_len, 'big') 
+        
+        encrypted_data = aes_ige.encrypt(data_with_hash)
+        self.sendUnencrypted(self.set_client_DH_params(nonce, server_nonce, encrypted_data))
         return True
+    
+    def process_dh_gen_ok(self, nonce, server_nonce, new_nonce_hash1):
+        logging.debug("process_dh_gen_ok(nonce={!r}, server_nonce={!r}, new_nonce_hash1={!r})".format(nonce, server_nonce, new_nonce_hash1))
+        
+        return True
+    
+    def process_dh_gen_retry(self, nonce, server_nonce, new_nonce_hash2):
+        logging.debug("process_dh_gen_retry(nonce={!r}, server_nonce={!r}, new_nonce_hash2={!r})".format(nonce, server_nonce, new_nonce_hash2))
+        return False
+    
+    def process_dh_gen_fail(self, nonce, server_nonce, new_nonce_hash3):
+        logging.debug("process_dh_gen_fail(nonce={!r}, server_nonce={!r}, new_nonce_hash3={!r})".format(nonce, server_nonce, new_nonce_hash3))
+        return False
 
     def req_pq(self, nonce):
         logging.debug("req_pq(nonce={!r})".format(nonce))
@@ -295,7 +235,12 @@ class Session:
         return Tuple(Int(), String, String).Dump(0x7a19cb76, n, e)
     
     def set_client_DH_params(self, nonce, server_nonce, encrypted_data):
-        return Tuple(Int(), Int(128), Int(128), String).Dump(0xf5045f1f, 
+        logging.debug("set_client_DH_params(nonce={!r}, server_nonce={!r}, encrypted_data={!r})".format(nonce, server_nonce, encrypted_data))
+        return Tuple(Int(), Int(128), Int(128), String).Dump(0xf5045f1f, nonce, server_nonce, encrypted_data)
+    
+    def client_DH_inner_data(self, nonce, server_nonce, retry_id, g_b):
+        logging.debug("client_DH_inner_data(nonce={!r}, server_nonce={!r}, retry_id={!r}, g_b={!r})".format(nonce, server_nonce, retry_id, g_b))
+        return Tuple(Int(), Int(128), Int(128), Long, String).Dump(0x6643b654, nonce, server_nonce, retry_id, g_b)
 
     def send(self, data):
         length = len(data) + 12
@@ -328,7 +273,7 @@ def main():
     logger.addHandler(handler)
     handler = logging.StreamHandler()
     handler.setFormatter(formatter)
-    handler.setLevel(logging.INFO)
+    handler.setLevel(logging.DEBUG)
     logger.addHandler(handler)
 
     session = Session();
