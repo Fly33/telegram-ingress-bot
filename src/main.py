@@ -1,53 +1,29 @@
 # -*- coding: utf8 -*-
-import socket
-import time
-import zlib
-import struct
 import logging
 import logging.handlers
+import traceback
 import rsa
 from Crypto.Random import random
-from cipher import *
+from crypto import *
 from format import *
+from session import CryptoSession
+from maths import *
 
-def decompose(n):
-    x = 2
-    y = 2
-    
-    f = lambda x: (x * x + 1) % n
-    
-    def nod(x, y):
-        while True:
-            x %= y
-            if x == 0:
-                return y
-            y %= x
-            if y == 0:
-                return x
-    
-    i = 0
-    while True:
-        x = f(x)
-        y = f(f(y))
-        p = nod(n, abs(x - y))
-        if p > 1:
-            break
-        i += 1
+AUTH_KEY_FILE = 'auth.key'
+PUBLIC_KEY_FILE = 'public.pem'
+
+class DataSession(CryptoSession):
+
+    def __init__(self):
+        CryptoSession.__init__(self)
         
-    q = n // p
+    def Dispatch(self, data):
+        message, _ = Unknown.Parse(data)
+        getattr(self, StructById[message[0]].Name())(*message[1:])
+        
     
-    logging.debug("{} = {} * {}".format(n, p, q))
-    
-    if p < q:
-        return (p, q)
-    return (q, p)
-
-OK = 0
-ERROR = 1 
     
 class Session:
-    AUTH_KEY_FILE = 'auth.key'
-    PUBLIC_KEY_FILE = 'public.pem'
     
     def __init__(self):
         self.datano = 0
@@ -276,8 +252,28 @@ def main():
     handler.setLevel(logging.DEBUG)
     logger.addHandler(handler)
 
-    session = Session();
-#     session.run()
+    session = DataSession();
+    session.Connect(("149.154.167.40", 443))
+
+#     try:
+#         with open(AUTH_KEY_FILE, 'rb') as key_file:
+#             self.auth_key = key_file.read()
+#     except:
+#         self.nonce = random.getrandbits(128)
+#         self.sendUnencrypted(self.req_pq(self.nonce))
+#     else:
+#         pass
+#         # послать приветствие
+    
+    while True:
+        try:
+            data = session.Receive(0)
+            if data is None:
+                continue
+            session.Dispatch(data)
+        except:
+            logging.error(traceback.format_exc())
+            break
 
 #     nonce = int("3E0549828CCA27E966B301A48FECE2FC", 16)
 #     nonce = nonce.to_bytes(16, 'big')
@@ -285,10 +281,10 @@ def main():
 #     req_pq = session.req_pq(nonce)
 #     logging.debug("req_pq: ({}) {}".format(len(req_pq), hex(int.from_bytes(req_pq, 'big'))[2:].upper()));
     
-    message = int("632416053E0549828CCA27E966B301A48FECE2FCA5CF4D33F4A11EA877BA4AA5739073300817ED48941A08F98100000015C4B51C01000000216BE86C022BB4C3", 16)
-    message = message.to_bytes(64, 'big')
-    data = session.process_func(message)
-    logging.debug("req_DH_params: ({}) {}".format(len(data), hex(int.from_bytes(data, 'big'))[2:].upper()));
+#     message = int("632416053E0549828CCA27E966B301A48FECE2FCA5CF4D33F4A11EA877BA4AA5739073300817ED48941A08F98100000015C4B51C01000000216BE86C022BB4C3", 16)
+#     message = message.to_bytes(64, 'big')
+#     data = session.process_func(message)
+#     logging.debug("req_DH_params: ({}) {}".format(len(data), hex(int.from_bytes(data, 'big'))[2:].upper()));
 
 if __name__ == "__main__":
     main()

@@ -1,10 +1,15 @@
+# -*- coding: utf8 -*-
+import logging
+import struct
+
 def Int(size=32):
     assert(size % 8 == 0)
     size //= 8
     class int_cl:
         @classmethod
-        def Parse(cls, data, offset):
+        def Parse(cls, data, offset=0):
             return (int.from_bytes(data[offset:offset+size], 'little'), size)
+        
         @classmethod
         def Dump(cls, value):
             return value.to_bytes(size, 'little')
@@ -15,13 +20,14 @@ class Long(Int(64)):
 
 class String:
     @classmethod
-    def Parse(cls, data, offset):
+    def Parse(cls, data, offset=0):
         ln = int.from_bytes(data[offset:offset+1], 'little')
         if ln == 254:
             ln = int.from_bytes(data[offset+1:offset+4], 'little')
             return (data[offset+4:offset+4+ln], (((ln+4)-1)//4+1)*4)
         else:
             return (data[offset+1:offset+1+ln], (((ln+1)-1)//4+1)*4)
+        
     @classmethod
     def Dump(cls, value):
         if len(value) <= 253:
@@ -33,18 +39,21 @@ def BigInt(size):
     size //= 8
     class big_int_cl(String):
         @classmethod
-        def Parse(cls, data, offset):
+        def Parse(cls, data, offset=0):
             result, ln = super().Parse(data, offset)
             return (int.from_bytes(result, 'big'), ln)
+        
         @classmethod
         def Dump(cls, value):
             return super().Dump(value.to_bytes(size, 'big'))
+        
     return big_int_cl
 
 class Double:
     @classmethod
-    def Parse(cls, data, offset):
+    def Parse(cls, data, offset=0):
         return (struct.unpack_from('d', data, offset)[0], 8)
+    
     @classmethod
     def Dump(cls, value):
         return struct.pack('d', value)
@@ -52,14 +61,15 @@ class Double:
 def Tuple(*class_arg):
     class tuple_cl:
         @classmethod
-        def Parse(cls, data, offset):
+        def Parse(cls, data, offset=0):
             result = []
             reslen = 0
             for t in class_arg:
                 dt, ln = t.Parse(data, offset+reslen)
                 result.append(dt)
                 reslen += ln
-            return (result, reslen)
+            return (tuple(result), reslen)
+        
         @classmethod
         def Dump(cls, *values):
             if len(values) == 1 and isinstance(values[0], tuple):
@@ -68,12 +78,13 @@ def Tuple(*class_arg):
             for arg, value in zip(class_arg, values):
                 result += arg.Dump(value)
             return result
+        
     return tuple_cl
 
 def Vector(tipe):
     class vector_cl:
         @classmethod
-        def Parse(cls, data, offset):
+        def Parse(cls, data, offset=0):
             result = []
             reslen = 0
             _, ln = Int().Parse(data, offset) # 0x1cb5c415
@@ -84,66 +95,69 @@ def Vector(tipe):
                 dt, ln = tipe.Parse(data, offset+reslen)
                 result.append(dt)
                 reslen += ln
-            return (result, reslen)
+            return (tuple(result), reslen)
+        
         @classmethod
         def Dump(cls, value):
             result = b''
             for val in value:
                 result += tipe.Dump(val)
+                
     return vector_cl
 
 StructById = {}
 StructByName = {}
 
-def Struct(name, hash, **kwarg):
-    def Data(name):
-        class data_cl:
-            def __init__(self, **kwarg):
-                for k, v in kwarg.items():
-                    setattr(self, k, v)
-                    
-            @classmethod
-            def Name(cls):
-                return name
-
-        return data_cl
-    
-    class struct_cl(Tuple(Int(), *kwarg.values())):
+def Register(name, hash, *args):
+    class struct_cl(Tuple(Int(), *args)):
         @classmethod
-        def Parse(cls, data, offset=0):
-            result, ln = super().Parse(data, offset)
-            return (Data(name)(**dict(zip(kwarg.keys(), result[1:]))), ln)
+        def Name(cls):
+            return name
         
         @classmethod
-        def Dump(cls, *args):
-            return super().Dump(hash, *args)
-    
+        def Hash(cls):
+            return hash
+        
+        @classmethod
+        def Create(cls, *args):
+            # TODO: вставить проверку типов?
+            return (hash,) + args
+
     StructById[hash] = struct_cl
     StructByName[name] = struct_cl
-    return struct_cl
-        
-Struct('process_resPQ', 0x05162463, nonce=Int(128), server_nonce=Int(128), pq=String, fingerprints=Vector(Long))
-Struct('server_DH_params_fail', 0x79cb045d, nonce=Int(128), server_nonce=Int(128), new_nonce_hash=Int(128)) 
-Struct('server_DH_params_ok', 0xd0e8075c, nonce=Int(128), server_nonce=Int(128), encrypted_answer=String) 
-Struct('dh_gen_ok', 0x3bcbf734, nonce=Int(128), server_nonce=Int(128), new_nonce_hash1=Int(128))
-Struct('dh_gen_retry', 0x46dc1fb9, nonce=Int(128), server_nonce=Int(128), new_nonce_hash2=Int(128))
-Struct('dh_gen_fail', 0xa69dae02, nonce=Int(128), server_nonce=Int(128), new_nonce_hash3=Int(128))
-Struct('req_pq', 0x60469778, nonce=Int(128))
-Struct('p_q_inner_data', 0x83c95aec, pq=String, p=String, q=String, nonce=Int(128), server_nonce=Int(128), new_nonce=Int(256))
-Struct('req_DH_params', 0xd712e4be, nonce=Int(128), server_nonce=Int(128), p=String, q=String, public_key_fingerprint=Long, encrypted_data=String)
-Struct('rsa_public_key', 0x7a19cb76, n=String, e=String)
-Struct('set_client_DH_params', 0xf5045f1f, nonce=Int(128), server_nonce=Int(128), encrypted_data=String)
-Struct('client_DH_inner_data', 0x6643b654, nonce=Int(128), server_nonce=Int(128), retry_id=Long, g_b=String)
+
+class Unknown:
+    @classmethod
+    def Parse(cls, data, offset=0):
+        tipe, _ = Int().Parse(data, offset)
+        return StructById[tipe].Parse(data, offset)
+    
+    @classmethod
+    def Dump(cls, *values):
+        if len(values) == 1 and isinstance(values[0], tuple):
+            return cls.Dump(*values[0])
+        return StructById[values[0]].Dump(*values)
+
+Register('process_resPQ', 0x05162463, Int(128), Int(128), BigInt(64), Vector(Long))
+Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
+Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String) 
+Register('dh_gen_ok', 0x3bcbf734, Int(128), Int(128), Int(128))
+Register('dh_gen_retry', 0x46dc1fb9, Int(128), Int(128), Int(128))
+Register('dh_gen_fail', 0xa69dae02, Int(128), Int(128), Int(128))
+Register('req_pq', 0x60469778, Int(128))
+Register('p_q_inner_data', 0x83c95aec, BigInt(64), BigInt(32), BigInt(32), Int(128), Int(128), Int(256))
+Register('req_DH_params', 0xd712e4be, Int(128), Int(128), BigInt(32), BigInt(32), Long, String)
+Register('rsa_public_key', 0x7a19cb76, BigInt(2048), BigInt(32))
+Register('set_client_DH_params', 0xf5045f1f, Int(128), Int(128), String)
+Register('client_DH_inner_data', 0x6643b654, Int(128), Int(128), Long, BigInt(2048))
 
 if __name__ == "__main__":
-    class test_cl(Struct("test_struct", 0x12345678, x=Int())):
-        @classmethod
-        def Dump(cls, x):
-            return super().Dump(x)
+    Register("test_struct", 0x12345678, Int(), Int())
 
-    t = StructByName['test_struct']()
-    data = t.Dump(123)
+    test_cl = StructByName['test_struct']
+    t = test_cl()
+    data = Unknown.Dump(t.Create(123, 456))
     print(hex(int.from_bytes(data, 'big'))[2:].upper())
-    x, ln = test_cl.Parse(data)
-    print(x.Name(), x.__dict__, x.x)
+    x, ln = Unknown.Parse(data)
+    print(x)
     
