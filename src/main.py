@@ -8,6 +8,8 @@ from crypto import *
 from format import *
 from session import CryptoSession
 from maths import *
+import yaml
+from optparse import OptionParser
 
 AUTH_KEY_FILE = 'auth.key'
 PUBLIC_KEY_FILE = 'public.pem'
@@ -20,8 +22,12 @@ class DataSession(CryptoSession):
     def Dispatch(self, data):
         message, _ = Unknown.Parse(data)
         getattr(self, StructById[message[0]].Name())(*message[1:])
-        
     
+    def Run(self, config):
+        self.Connect(config['server']['address']['host'], config['server']['address']['port'])
+        
+        
+            
     
 class Session:
     
@@ -240,10 +246,16 @@ class Session:
         pass
 
 def main():
+    parser = OptionParser()
+    parser.add_option("-c", "--config", help="yaml config file name", default="config.yaml")
+    (options, args) = parser.parse_args()
+
+    config = yaml.load(options.config)
+
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-    handler = logging.handlers.RotatingFileHandler('test.log', maxBytes=16000000, backupCount=2)
+    handler = logging.handlers.RotatingFileHandler(config["log_file"], maxBytes=16000000, backupCount=2)
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -253,7 +265,7 @@ def main():
     logger.addHandler(handler)
 
     session = DataSession();
-    session.Connect(("149.154.167.40", 443))
+    session.Run(config)
 
 #     try:
 #         with open(AUTH_KEY_FILE, 'rb') as key_file:
