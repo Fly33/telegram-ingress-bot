@@ -52,6 +52,8 @@ class CryptoSession(TcpSession):
     
     def Receive(self, timeout):
         data = super().Receive(timeout)
+        if data is None:
+            return None
         auth_key_id = data[0:8]
         if auth_key_id == b'\0\0\0\0\0\0\0\0':
             message_id = data[8:16]
@@ -60,12 +62,12 @@ class CryptoSession(TcpSession):
         else:
             pass
         
-    def SendUnencrypted(self, data):
-        data = b'\0\0\0\0\0\0\0\0' + self.getMessageId().to_bytes(8, "little") + len(data).to_bytes(4, "little") + data
-        self.Send(data) 
-    
-    def SendEncrypted(self, data):
-        pass
+    def Send(self, data, encrypted=True):
+        if encrypted:
+            pass
+        else:
+            data = b'\0\0\0\0\0\0\0\0' + self.getMessageId().to_bytes(8, "little") + len(data).to_bytes(4, "little") + data
+        return self.Send(data)
     
     def SetKey(self, key):
         pass

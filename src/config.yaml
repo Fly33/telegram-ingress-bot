@@ -2,7 +2,7 @@ server:
     address:
         host: 149.154.167.40
         port: 443
-    key_file: public.pem
+    public_key: public.pem
 client:
-    auth_key_file: auth.key
+    auth_key: auth.key
 log_file: log.txt

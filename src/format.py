@@ -125,6 +125,7 @@ def Register(name, hash, *args):
 
     StructById[hash] = struct_cl
     StructByName[name] = struct_cl
+    globals()[name] = struct_cl
 
 class Unknown:
     @classmethod
@@ -138,7 +139,7 @@ class Unknown:
             return cls.Dump(*values[0])
         return StructById[values[0]].Dump(*values)
 
-Register('process_resPQ', 0x05162463, Int(128), Int(128), BigInt(64), Vector(Long))
+Register('resPQ', 0x05162463, Int(128), Int(128), BigInt(64), Vector(Long))
 Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
 Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String) 
 Register('dh_gen_ok', 0x3bcbf734, Int(128), Int(128), Int(128))

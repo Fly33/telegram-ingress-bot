@@ -19,14 +19,30 @@ class DataSession(CryptoSession):
     def __init__(self):
         CryptoSession.__init__(self)
         
-    def Dispatch(self, data):
-        message, _ = Unknown.Parse(data)
-        getattr(self, StructById[message[0]].Name())(*message[1:])
+#     def Dispatch(self, data):
+#         message, _ = Unknown.Parse(data)
+#         getattr(self, StructById[message[0]].Name())(*message[1:])
     
-    def Run(self, config):
-        self.Connect(config['server']['address']['host'], config['server']['address']['port'])
-        
-        
+#     def Run(self, config):
+#         self.Connect(config['server']['address']['host'], config['server']['address']['port'])
+#         
+#         try:
+#             with open(config['client']['auth_key'], 'rb') as auth_key_file:
+#                 self.auth_key = auth_key_file.read()
+#         except:
+#             self.nonce = random.getrandbits(128)
+#             self.sendUnencrypted(Unknown.Dump(req_pq.Create(self.nonce)))
+#         else:
+#             pass
+
+    def Receive(self, timeout):
+        data = super().Receive(timeout)
+        if data is None:
+            return None
+        return Unknown.Parse(data)[0]
+
+    def Send(self, data, encrypted=True):
+        return super().Send(Unknown.Dump(data), encrypted)
             
     
 class Session:
@@ -279,7 +295,7 @@ def main():
     
     while True:
         try:
-            data = session.Receive(0)
+            data = session.Receive(0) # тут ващет не ноль
             if data is None:
                 continue
             session.Dispatch(data)
