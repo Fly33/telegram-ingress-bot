@@ -30,6 +30,25 @@ class DataSession(CryptoSession):
         return super().Send(Unknown.Dump(data), encrypted)
 
 
+class DecryptError(RuntimeError):
+    pass
+
+
+def AES_IGE_TLG(AES_IGE):
+    def encrypt(self, data):
+        data = Unknown.Dump(data)
+        data_with_hash = SHA1(data) + data
+        rand_len = (15-(len(data_with_hash)-1)%16)
+        data_with_hash = data_with_hash + random.getrandbits(rand_len*8).to_bytes(rand_len, 'big')
+        return super().encrypt(data_with_hash)         
+
+    def decrypt(self, data):
+        data_with_hash = super().decrypt(data)
+        data, data_len = Unknown.Parse(data_with_hash[20:])
+        if data_with_hash[0:20] != SHA1(data_with_hash[20:20+data_len]):
+            raise DecryptError("Failed to decrypt message")
+        return data
+
 class Bot:
     def __init__(self, config):
         self.config = config
@@ -116,14 +135,8 @@ class Bot:
         tmp_aes_key = nn_sn + sn_nn[0:12]
         tmp_aes_iv = sn_nn[12:20] + nn_nn + new_nonce_str[0:4]
         
-        aes_ige = AES_IGE(tmp_aes_key, tmp_aes_iv)
-        answer_with_hash = aes_ige.decrypt(encrypted_answer)
-        answer, answer_len = server_DH_inner_data.Parse(answer_with_hash[20:])
-        
-        answer_sha = SHA1(answer_with_hash[20:20+answer_len])
-        if answer_with_hash[0:20] != answer_sha:
-            logging.error('Failed to decrypt answer')
-            return False
+        aes_ige = AES_IGE_TLG(tmp_aes_key, tmp_aes_iv)
+        answer = aes_ige.decrypt(encrypted_answer)
         
         _, nonce, server_nonce, g, p, g_a, server_time = answer
         logging.debug("server_DH_inner_data(nonce={!r}, server_nonce={!r}, g={!r}, dh_prime={!r}, g_a={!r}, server_time={!r})".format(nonce, server_nonce, g, p, g_a, server_time))
@@ -138,17 +151,11 @@ class Bot:
         g_ab = pow(g_a, b, p)
         
         self.auth_key = g_ab.to_bytes(256, 'big')
-        
         self.auth_key_hash = SHA1(self.auth_key)[0:8]
         
-        data = Unknown.Dump(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
+        encrypted_data = aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
         self.retry_id += 1
-        data_with_hash = SHA1(data) + data
-        rand_len = (15-(len(data_with_hash)-1)%16)
-        data_with_hash = data_with_hash + random.getrandbits(rand_len*8).to_bytes(rand_len, 'big') 
-        
-        encrypted_data = aes_ige.encrypt(data_with_hash)
-        self.sendUnencrypted(self.set_client_DH_params(nonce, server_nonce, encrypted_data))
+        self.send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False)
         return True
     
     def process_dh_gen_ok(self, nonce, server_nonce, new_nonce_hash1):
@@ -159,6 +166,7 @@ class Bot:
             return False
         # TODO: проверить хэш
         self.salt = XOR.new(self.new_nonce[0:8]).encrypt(self.server_nonce[0:8])
+        # TODO: создать сессию
         return True
     
     def process_dh_gen_retry(self, nonce, server_nonce, new_nonce_hash2):
