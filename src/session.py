@@ -5,6 +5,9 @@ from socket import socket
 from select import select
 from crypto import CRC32
 
+class ConnectionError(RuntimeError):
+    pass
+
 class TcpSession:
     def __init__(self):
         self.client_seq = 0
@@ -18,7 +21,10 @@ class TcpSession:
         rlist, _, _ = select((self.sock), (), (), timeout)
         if len(rlist) == 0:
             return
-        self.data += self.sock.recv(4096)
+        data = self.sock.recv(4096)
+        if len(data) == 0:
+            raise ConnectionError("Connection closed")
+        self.data += data
         data_len = int.from_bytes(self.data[:4], 'little')
         if data_len > len(self.data):
             return
@@ -35,7 +41,10 @@ class TcpSession:
         data = length.to_bytes(4, "little") + self.client_seq.to_bytes(4, "little") + data
         data = data + CRC32(data).to_bytes(4, "little")
         self.client_seq += 1
-        self.sock.send(data)
+        # TODO: сделать отложенную отправку
+        while len(data) != 0:
+            ln = self.sock.send(data)
+            data = data[ln:]
 
 class CryptoSession(TcpSession):
     def __init__(self):

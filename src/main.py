@@ -3,10 +3,11 @@ import logging
 import logging.handlers
 import traceback
 import rsa
+from Crypto.Cipher import XOR
 from Crypto.Random import random
 from crypto import *
 from format import *
-from session import CryptoSession
+from session import CryptoSession, ConnectionError
 from maths import *
 import yaml
 from optparse import OptionParser
@@ -18,22 +19,6 @@ class DataSession(CryptoSession):
 
     def __init__(self):
         CryptoSession.__init__(self)
-        
-#     def Dispatch(self, data):
-#         message, _ = Unknown.Parse(data)
-#         getattr(self, StructById[message[0]].Name())(*message[1:])
-    
-#     def Run(self, config):
-#         self.Connect(config['server']['address']['host'], config['server']['address']['port'])
-#         
-#         try:
-#             with open(config['client']['auth_key'], 'rb') as auth_key_file:
-#                 self.auth_key = auth_key_file.read()
-#         except:
-#             self.nonce = random.getrandbits(128)
-#             self.sendUnencrypted(Unknown.Dump(req_pq.Create(self.nonce)))
-#         else:
-#             pass
 
     def Receive(self, timeout):
         data = super().Receive(timeout)
@@ -43,76 +28,42 @@ class DataSession(CryptoSession):
 
     def Send(self, data, encrypted=True):
         return super().Send(Unknown.Dump(data), encrypted)
-            
-    
-class Session:
-    
-    def __init__(self):
-        self.datano = 0
-        self.map = dict()
-        self.data = bytes()
-        self.message_id = 0
+
+
+class Bot:
+    def __init__(self, config):
+        self.config = config
         self.retry_id = 0
-    
-    def run(self):
-        self.sock = socket.socket()
-        self.sock.connect(("149.154.167.40", 443))
         
+    def Run(self):
+        self.session = DataSession();
+        self.session.Connect(config['address']['host'], config['address']['port'])
+    
         try:
-            with open(self.AUTH_KEY_FILE, 'rb') as key_file:
-                self.auth_key = key_file.read()
+            with open(config['auth_key'], 'rb') as auth_key_file:
+                auth_key = auth_key_file.read()
         except:
             self.nonce = random.getrandbits(128)
-            self.sendUnencrypted(self.req_pq(self.nonce))
+            self.session.send(req_pq.Create(self.nonce), False)
         else:
             pass
-            # послать приветствие
         
-        while True:
-            if not self.receive(4):
-                break
-            if not self.receive(int.from_bytes(self.data[:4], 'little')):
-                break
-            if not self.process():
-                break
-                
-    def receive(self, size):
         while True:
             try:
-                data = self.sock.recv(size - len(self.data))
-            except OSError:
-                return False
-        if len(data) == 0:
-            return False
-        self.data = self.data + data
-        return True       
+                data = self.session.Receive(0) # тут ващет не ноль
+                if data is None:
+                    continue
+                self.Dispatch(data)
+            except ConnectionError:
+                # TODO: reconnect
+                break
+            except:
+                logging.error(traceback.format_exc())
+                break
     
-    def process(self):
-        if int.from_bytes(self.data[-4:0], 'little') != int.from_bytes(zlib.crc32(self.data[:-4], 'little')):
-            return True
-        return self.process_message(self.data[8:-4])
-        
-    def process_message(self, message):
-        auth_key_id = message[0:8]
-        message_id = message[8:16]
-        message_len = int.from_bytes(message[16:20])
-        return self.process_func(message[20:])
-        
-    def process_func(self, message):
-        func = int.from_bytes(message[:4], "little")
-        if func == 0x05162463:
-            return self.process_resPQ(*Tuple(Int(128), Int(128), String, Vector(Long)).Parse(message, 4)[0])
-        elif func == 0x79cb045d:
-            return self.process_server_DH_params_fail(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0])
-        elif func == 0xd0e8075c:
-            return self.process_server_DH_params_ok(*Tuple(Int(128), Int(128), String).Parse(message, 4)[0])
-        elif func == 0x3bcbf734:
-            return self.process_dh_gen_ok(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0]);
-        elif func == 0x46dc1fb9:
-            return self.process_dh_gen_retry(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0]);
-        elif func == 0xa69dae02:
-            return self.process_dh_gen_fail(*Tuple(Int(128), Int(128), Int(128)).Parse(message, 4)[0]);
-
+    def Dispatch(self, data):
+        return getattr(self, 'process_' + StructById[message[0]].Name())(*message[1:])
+     
     def process_resPQ(self, nonce, server_nonce, pq, fingerprints):
         logging.debug("resPQ(nonce={!r}, server_nonce={!r}, pq={!r}, fingerprints={!r}".format(nonce, server_nonce, pq, fingerprints))
         if nonce != self.nonce:
@@ -125,9 +76,9 @@ class Session:
         # перенести?
         try:
             with open(self.PUBLIC_KEY_FILE, 'rb') as f:
-                self.server_public_key = rsa.PublicKey.load_pkcs1(f.read())
-            # TODO: проверить отпечаток
-            sha = SHA1(self.rsa_public_key(self.server_public_key.n.to_bytes(256, 'big'), self.server_public_key.e.to_bytes(4, 'big')))
+                server_public_key = rsa.PublicKey.load_pkcs1(f.read())
+            # проверить отпечаток
+            sha = SHA1(Unknown.Dump(rsa_public_key.Create(server_public_key.n, server_public_key.e)))
             logging.debug('Server public fingerprint: {!r}'.format(sha))
             for fp_id, fp in enumerate(fingerprints):
                 if fp == sha:
@@ -140,9 +91,9 @@ class Session:
             logging.error('Server public key is missing!')
             return False
         self.new_nonce = random.getrandbits(256)
-        data = self.p_q_inner_data(pq.to_bytes(8, 'big'), p.to_bytes(4, 'big'), q.to_bytes(4, 'big'), nonce, server_nonce, self.new_nonce)
-        encrypted_data = rsa.encrypt(data, self.server_public_key)
-        self.sendUnencrypted(self.req_DH_params(nonce, server_nonce, p.to_bytes(4, 'big'), q.to_bytes(4, 'big'), fingerprints[fingerprint_id], encrypted_data))
+        data = Unknown.Dump(p_q_inner_data.Create(pq, p, q, nonce, server_nonce, self.new_nonce))
+        encrypted_data = rsa.encrypt(data, server_public_key)
+        self.session.send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data))
         return True
         
     def process_server_DH_params_fail(self, nonce, server_nonce, new_nonce_hash):
@@ -157,8 +108,8 @@ class Session:
         if server_nonce != self.server_nonce:
             return False
         
-        server_nonce_str = server_nonce.to_bytes(16, 'little')
-        new_nonce_str = self.new_nonce.to_bytes(16, 'little')
+        server_nonce_str = Int(16).Dump(server_nonce)
+        new_nonce_str = Int(16).Dump(self.new_nonce)
         sn_nn = SHA1(server_nonce_str + new_nonce_str)
         nn_sn = SHA1(new_nonce_str + server_nonce_str)
         nn_nn = SHA1(new_nonce_str + new_nonce_str)
@@ -167,23 +118,20 @@ class Session:
         
         aes_ige = AES_IGE(tmp_aes_key, tmp_aes_iv)
         answer_with_hash = aes_ige.decrypt(encrypted_answer)
-        answer, answer_len = Tuple(Int(), Int(128), Int(128), Int(), String, String, Int()).Parse(answer_with_hash[20:])
+        answer, answer_len = server_DH_inner_data.Parse(answer_with_hash[20:])
         
         answer_sha = SHA1(answer_with_hash[20:20+answer_len])
         if answer_with_hash[0:20] != answer_sha:
             logging.error('Failed to decrypt answer')
             return False
         
-        _, nonce, server_nonce, g, dh_prime, g_a, server_time = answer
-        logging.debug("server_DH_inner_data(nonce={!r}, server_nonce={!r}, g={!r}, dh_prime={!r}, g_a={!r}, server_time={!r})".format(nonce, server_nonce, g, dh_prime, g_a, server_time))
+        _, nonce, server_nonce, g, p, g_a, server_time = answer
+        logging.debug("server_DH_inner_data(nonce={!r}, server_nonce={!r}, g={!r}, dh_prime={!r}, g_a={!r}, server_time={!r})".format(nonce, server_nonce, g, p, g_a, server_time))
     
         if nonce != self.nonce:
             return False
         if server_nonce != self.server_nonce:
             return False
-        
-        g_a = int.from_bytes(g_a, 'big')
-        p = int.from_bytes(dh_prime, 'big')
         
         b = random.getrandbits(2048)
         g_b = pow(g, b, p)
@@ -193,7 +141,7 @@ class Session:
         
         self.auth_key_hash = SHA1(self.auth_key)[0:8]
         
-        data = self.client_DH_inner_data(nonce, server_nonce, self.retry_id, g_b.to_bytes(256, 'big'))
+        data = Unknown.Dump(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
         self.retry_id += 1
         data_with_hash = SHA1(data) + data
         rand_len = (15-(len(data_with_hash)-1)%16)
@@ -205,61 +153,23 @@ class Session:
     
     def process_dh_gen_ok(self, nonce, server_nonce, new_nonce_hash1):
         logging.debug("process_dh_gen_ok(nonce={!r}, server_nonce={!r}, new_nonce_hash1={!r})".format(nonce, server_nonce, new_nonce_hash1))
-        
+        if nonce != self.nonce:
+            return False
+        if server_nonce != self.server_nonce:
+            return False
+        # TODO: проверить хэш
+        self.salt = XOR.new(self.new_nonce[0:8]).encrypt(self.server_nonce[0:8])
         return True
     
     def process_dh_gen_retry(self, nonce, server_nonce, new_nonce_hash2):
         logging.debug("process_dh_gen_retry(nonce={!r}, server_nonce={!r}, new_nonce_hash2={!r})".format(nonce, server_nonce, new_nonce_hash2))
+        # TODO: попробовать снова
         return False
     
     def process_dh_gen_fail(self, nonce, server_nonce, new_nonce_hash3):
         logging.debug("process_dh_gen_fail(nonce={!r}, server_nonce={!r}, new_nonce_hash3={!r})".format(nonce, server_nonce, new_nonce_hash3))
+        # TODO: попробовать снова
         return False
-
-    def req_pq(self, nonce):
-        logging.debug("req_pq(nonce={!r})".format(nonce))
-        return Tuple(Int(), Int(128)).Dump(0x60469778, nonce)
-    
-    def p_q_inner_data(self, pq, p, q, nonce, server_nonce, new_nonce):
-        logging.debug("P_Q_inner_data(pq={!r}, p={!r}, q={!r}, nonce={!r}, server_nonce={!r}, new_nonce={!r})".format(pq, p, q, nonce, server_nonce, new_nonce))
-        return Tuple(Int(), String, String, String, Int(128), Int(128), Int(256)).Dump(0x83c95aec, pq, p, q, nonce, server_nonce, new_nonce)
-        
-    def req_DH_params(self, nonce, server_nonce, p, q, public_key_fingerprint, encrypted_data):
-        logging.debug("req_DH_params(nonce={!r}, server_nonce={!r}, p={!r}, q={!r}, public_key_fingerprint={!r}, encrypted_data={!r})".format(nonce, server_nonce, p, q, public_key_fingerprint, encrypted_data))
-        return Tuple(Int(), Int(128), Int(128), String, String, Long, String).Dump(0xd712e4be, nonce, server_nonce, p, q, public_key_fingerprint, encrypted_data)
-
-    def rsa_public_key(self, n, e):
-        logging.debug("rsa_public_key(n={!r}, e={!r})".format(n, e))
-        return Tuple(Int(), String, String).Dump(0x7a19cb76, n, e)
-    
-    def set_client_DH_params(self, nonce, server_nonce, encrypted_data):
-        logging.debug("set_client_DH_params(nonce={!r}, server_nonce={!r}, encrypted_data={!r})".format(nonce, server_nonce, encrypted_data))
-        return Tuple(Int(), Int(128), Int(128), String).Dump(0xf5045f1f, nonce, server_nonce, encrypted_data)
-    
-    def client_DH_inner_data(self, nonce, server_nonce, retry_id, g_b):
-        logging.debug("client_DH_inner_data(nonce={!r}, server_nonce={!r}, retry_id={!r}, g_b={!r})".format(nonce, server_nonce, retry_id, g_b))
-        return Tuple(Int(), Int(128), Int(128), Long, String).Dump(0x6643b654, nonce, server_nonce, retry_id, g_b)
-
-    def send(self, data):
-        length = len(data) + 12
-        data = length.to_bytes(4, "little") + self.datano.to_bytes(4, "little") + data
-        data = data + zlib.crc32(data).to_bytes(4, "little")
-        self.datano += 1
-        self.sock.send(data)
-        
-    def getMessageId(self):
-        msg_id = int(time.time() * (1 << 30)) * 4
-        if self.message_id >= msg_id:
-            self.message_id += 4
-        else:
-            self.message_id = msg_id
-        return self.message_id
-        
-    def sendUnencrypted(self, data):
-        self.send(int(0).to_bytes(8, "little") + self.getMessageId().to_bytes(8, "little") + len(data).to_bytes(4, "little") + data) 
-        
-    def sendEncrypted(self, data):
-        pass
 
 def main():
     parser = OptionParser()
@@ -271,7 +181,7 @@ def main():
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-    handler = logging.handlers.RotatingFileHandler(config["log_file"], maxBytes=16000000, backupCount=2)
+    handler = logging.handlers.RotatingFileHandler(config["log"], maxBytes=16000000, backupCount=2)
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -280,28 +190,8 @@ def main():
     handler.setLevel(logging.DEBUG)
     logger.addHandler(handler)
 
-    session = DataSession();
-    session.Run(config)
-
-#     try:
-#         with open(AUTH_KEY_FILE, 'rb') as key_file:
-#             self.auth_key = key_file.read()
-#     except:
-#         self.nonce = random.getrandbits(128)
-#         self.sendUnencrypted(self.req_pq(self.nonce))
-#     else:
-#         pass
-#         # послать приветствие
-    
-    while True:
-        try:
-            data = session.Receive(0) # тут ващет не ноль
-            if data is None:
-                continue
-            session.Dispatch(data)
-        except:
-            logging.error(traceback.format_exc())
-            break
+    bot = Bot(config['telegram'])
+    bot.Run()
 
 #     nonce = int("3E0549828CCA27E966B301A48FECE2FC", 16)
 #     nonce = nonce.to_bytes(16, 'big')

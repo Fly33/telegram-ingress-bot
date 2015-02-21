@@ -141,7 +141,8 @@ class Unknown:
 
 Register('resPQ', 0x05162463, Int(128), Int(128), BigInt(64), Vector(Long))
 Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
-Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String) 
+Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String)
+Register('server_DH_inner_data', 0xb5890dba, Int(128), Int(128), Int(), BigInt(2048), BigInt(2048), Int()) 
 Register('dh_gen_ok', 0x3bcbf734, Int(128), Int(128), Int(128))
 Register('dh_gen_retry', 0x46dc1fb9, Int(128), Int(128), Int(128))
 Register('dh_gen_fail', 0xa69dae02, Int(128), Int(128), Int(128))
