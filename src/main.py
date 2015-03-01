@@ -49,19 +49,21 @@ def AES_IGE_TLG(AES_IGE):
             raise DecryptError("Failed to decrypt message")
         return data
 
-class Bot:
+class Telegram:
     def __init__(self, config):
         self.config = config
-        self.retry_id = 0
         
     def Run(self):
         self.session = DataSession();
         self.session.Connect(config['address']['host'], config['address']['port'])
     
         try:
-            with open(config['auth_key'], 'rb') as auth_key_file:
+            with open(self.config['auth_key'], 'rb') as auth_key_file:
                 auth_key = auth_key_file.read()
+            logging.info("Auth key is loaded.")
         except:
+            logging.info("Generating new auth key.")
+            self.retry_id = 0
             self.nonce = random.getrandbits(128)
             self.session.send(req_pq.Create(self.nonce), False)
         else:
@@ -81,7 +83,11 @@ class Bot:
                 break
     
     def Dispatch(self, data):
-        return getattr(self, 'process_' + StructById[message[0]].Name())(*message[1:])
+        if data not in StructById:
+            logging.debug('Unknown response: {}'.format(hex(data[0])))
+            return
+        return getattr(self, 'process_' + StructById[data[0]].Name())(*data[1:])
+        
      
     def process_resPQ(self, nonce, server_nonce, pq, fingerprints):
         logging.debug("resPQ(nonce={!r}, server_nonce={!r}, pq={!r}, fingerprints={!r}".format(nonce, server_nonce, pq, fingerprints))
@@ -100,7 +106,7 @@ class Bot:
             sha = SHA1(Unknown.Dump(rsa_public_key.Create(server_public_key.n, server_public_key.e)))
             logging.debug('Server public fingerprint: {!r}'.format(sha))
             for fp_id, fp in enumerate(fingerprints):
-                if fp == sha:
+                if fp == sha[-8:0]:
                     fingerprint_id = fp_id
                     break
             else:
@@ -135,10 +141,12 @@ class Bot:
         tmp_aes_key = nn_sn + sn_nn[0:12]
         tmp_aes_iv = sn_nn[12:20] + nn_nn + new_nonce_str[0:4]
         
-        aes_ige = AES_IGE_TLG(tmp_aes_key, tmp_aes_iv)
+        self.aes_ige = AES_IGE_TLG(tmp_aes_key, tmp_aes_iv)
         answer = aes_ige.decrypt(encrypted_answer)
         
-        _, nonce, server_nonce, g, p, g_a, server_time = answer
+        return self.Dispatch(answer)
+    
+    def process_server_DH_inner_data(self, nonce, server_nonce, g, p, g_a, server_time):
         logging.debug("server_DH_inner_data(nonce={!r}, server_nonce={!r}, g={!r}, dh_prime={!r}, g_a={!r}, server_time={!r})".format(nonce, server_nonce, g, p, g_a, server_time))
     
         if nonce != self.nonce:
@@ -151,7 +159,7 @@ class Bot:
         g_ab = pow(g_a, b, p)
         
         self.auth_key = g_ab.to_bytes(256, 'big')
-        self.auth_key_hash = SHA1(self.auth_key)[0:8]
+        self.auth_key_hash = SHA1(self.auth_key)[-8:0]
         
         encrypted_data = aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
         self.retry_id += 1
@@ -165,7 +173,14 @@ class Bot:
         if server_nonce != self.server_nonce:
             return False
         # TODO: проверить хэш
+        with open(self.config['auth_key'], 'wb') as auth_key_file:
+            auth_key_file.write(auth_key)
         self.salt = XOR.new(self.new_nonce[0:8]).encrypt(self.server_nonce[0:8])
+        del self.nonce
+        del self.server_nonce
+        del self.new_nonce
+        del self.retry_id
+        del self.aes_ige
         # TODO: создать сессию
         return True
     
@@ -198,8 +213,8 @@ def main():
     handler.setLevel(logging.DEBUG)
     logger.addHandler(handler)
 
-    bot = Bot(config['telegram'])
-    bot.Run()
+    telegram = Telegram(config['telegram'])
+    telegram.Run()
 
 #     nonce = int("3E0549828CCA27E966B301A48FECE2FC", 16)
 #     nonce = nonce.to_bytes(16, 'big')
