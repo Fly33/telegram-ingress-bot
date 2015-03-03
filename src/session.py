@@ -18,7 +18,7 @@ class TcpSession:
         self.sock.connect((host, port))
     
     def Receive(self, timeout):
-        rlist, _, _ = select((self.sock), (), (), timeout)
+        rlist, _, _ = select((self.sock,), (), (), timeout)
         if len(rlist) == 0:
             return
         data = self.sock.recv(4096)
@@ -30,7 +30,7 @@ class TcpSession:
             return
         data = self.data[0:data_len]
         self.data = self.data[data_len:]
-        if int.from_bytes(data[-4:0], 'little') != CRC32(data[:-4]):
+        if int.from_bytes(data[-4:], 'little') != CRC32(data[:-4]):
             return
         seq = int.from_bytes(data[4:8], 'little')
         self.server_seq = seq
@@ -66,7 +66,7 @@ class CryptoSession(TcpSession):
         auth_key_id = data[0:8]
         if auth_key_id == b'\0\0\0\0\0\0\0\0':
             message_id = data[8:16]
-            message_len = int.from_bytes(data[16:20])
+            message_len = int.from_bytes(data[16:20], 'little')
             return data[20:]
         else:
             pass
@@ -76,7 +76,7 @@ class CryptoSession(TcpSession):
             pass
         else:
             data = b'\0\0\0\0\0\0\0\0' + self.getMessageId().to_bytes(8, "little") + len(data).to_bytes(4, "little") + data
-        return self.Send(data)
+        return super().Send(data)
     
     def SetKey(self, key):
         pass

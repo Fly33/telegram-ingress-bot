@@ -24,10 +24,10 @@ class DataSession(CryptoSession):
         data = super().Receive(timeout)
         if data is None:
             return None
-        return Unknown.Parse(data)[0]
+        return Box.Parse(data)[0]
 
     def Send(self, data, encrypted=True):
-        return super().Send(Unknown.Dump(data), encrypted)
+        return super().Send(Box.Dump(data), encrypted)
 
 
 class DecryptError(RuntimeError):
@@ -36,7 +36,7 @@ class DecryptError(RuntimeError):
 
 def AES_IGE_TLG(AES_IGE):
     def encrypt(self, data):
-        data = Unknown.Dump(data)
+        data = Box.Dump(data)
         data_with_hash = SHA1(data) + data
         rand_len = (15-(len(data_with_hash)-1)%16)
         data_with_hash = data_with_hash + random.getrandbits(rand_len*8).to_bytes(rand_len, 'big')
@@ -44,7 +44,7 @@ def AES_IGE_TLG(AES_IGE):
 
     def decrypt(self, data):
         data_with_hash = super().decrypt(data)
-        data, data_len = Unknown.Parse(data_with_hash[20:])
+        data, data_len = Box.Parse(data_with_hash[20:])
         if data_with_hash[0:20] != SHA1(data_with_hash[20:20+data_len]):
             raise DecryptError("Failed to decrypt message")
         return data
@@ -55,7 +55,7 @@ class Telegram:
         
     def Run(self):
         self.session = DataSession();
-        self.session.Connect(config['address']['host'], config['address']['port'])
+        self.session.Connect(self.config['address']['host'], self.config['address']['port'])
     
         try:
             with open(self.config['auth_key'], 'rb') as auth_key_file:
@@ -65,13 +65,13 @@ class Telegram:
             logging.info("Generating new auth key.")
             self.retry_id = 0
             self.nonce = random.getrandbits(128)
-            self.session.send(req_pq.Create(self.nonce), False)
+            self.session.Send(req_pq.Create(self.nonce), False)
         else:
             pass
         
         while True:
             try:
-                data = self.session.Receive(0) # тут ващет не ноль
+                data = self.session.Receive(None) # тут ващет не ноль
                 if data is None:
                     continue
                 self.Dispatch(data)
@@ -83,7 +83,7 @@ class Telegram:
                 break
     
     def Dispatch(self, data):
-        if data not in StructById:
+        if data[0] not in StructById:
             logging.debug('Unknown response: {}'.format(hex(data[0])))
             return
         return getattr(self, 'process_' + StructById[data[0]].Name())(*data[1:])
@@ -95,18 +95,17 @@ class Telegram:
             return False
         self.server_nonce = server_nonce
 
-        pq = int.from_bytes(pq, 'big')
-        p, q = decompose(pq)
+        p, q = Decompose(pq)
 
         # перенести?
         try:
-            with open(self.PUBLIC_KEY_FILE, 'rb') as f:
+            with open(self.config["public_key"], 'rb') as f:
                 server_public_key = rsa.PublicKey.load_pkcs1(f.read())
             # проверить отпечаток
-            sha = SHA1(Unknown.Dump(rsa_public_key.Create(server_public_key.n, server_public_key.e)))
+            sha = SHA1(rsa_public_key.Dump(server_public_key.n, server_public_key.e))
             logging.debug('Server public fingerprint: {!r}'.format(sha))
             for fp_id, fp in enumerate(fingerprints):
-                if fp == sha[-8:0]:
+                if fp == int.from_bytes(sha[-8:], 'little'):
                     fingerprint_id = fp_id
                     break
             else:
@@ -116,7 +115,7 @@ class Telegram:
             logging.error('Server public key is missing!')
             return False
         self.new_nonce = random.getrandbits(256)
-        data = Unknown.Dump(p_q_inner_data.Create(pq, p, q, nonce, server_nonce, self.new_nonce))
+        data = Box.Dump(p_q_inner_data.Create(pq, p, q, nonce, server_nonce, self.new_nonce))
         encrypted_data = rsa.encrypt(data, server_public_key)
         self.session.send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data))
         return True
@@ -159,7 +158,7 @@ class Telegram:
         g_ab = pow(g_a, b, p)
         
         self.auth_key = g_ab.to_bytes(256, 'big')
-        self.auth_key_hash = SHA1(self.auth_key)[-8:0]
+        self.auth_key_hash = SHA1(self.auth_key)[-8:]
         
         encrypted_data = aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
         self.retry_id += 1
@@ -199,7 +198,12 @@ def main():
     parser.add_option("-c", "--config", help="yaml config file name", default="config.yaml")
     (options, args) = parser.parse_args()
 
-    config = yaml.load(options.config)
+    try:
+        with open(options.config, 'r') as config_file:
+            config = yaml.load(config_file.read())
+    except:
+        logging.error('Unable to open "{}" file.'.format(options.config))
+        return
 
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
