@@ -34,7 +34,7 @@ class DecryptError(RuntimeError):
     pass
 
 
-def AES_IGE_TLG(AES_IGE):
+class AES_IGE_TLG(AES_IGE):
     def encrypt(self, data):
         data = Box.Dump(data)
         data_with_hash = SHA1(data) + data
@@ -48,6 +48,16 @@ def AES_IGE_TLG(AES_IGE):
         if data_with_hash[0:20] != SHA1(data_with_hash[20:20+data_len]):
             raise DecryptError("Failed to decrypt message")
         return data
+    
+def Hex(data):
+    if isinstance(data, int):
+        return hex(data)[2:]
+    elif isinstance(data, tuple) or isinstance(data, list):
+        return str(tuple(Hex(x) for x in data))
+    elif isinstance(data, bytes):
+        return hex(int.from_bytes(data, 'big'))[2:]
+    else:
+        return data
 
 class Telegram:
     def __init__(self, config):
@@ -59,7 +69,7 @@ class Telegram:
     
         try:
             with open(self.config['auth_key'], 'rb') as auth_key_file:
-                auth_key = auth_key_file.read()
+                self.session.auth_key = auth_key_file.read()
             logging.info("Auth key is loaded.")
         except:
             logging.info("Generating new auth key.")
@@ -90,7 +100,7 @@ class Telegram:
         
      
     def process_resPQ(self, nonce, server_nonce, pq, fingerprints):
-        logging.debug("resPQ(nonce={!r}, server_nonce={!r}, pq={!r}, fingerprints={!r}".format(nonce, server_nonce, pq, fingerprints))
+        logging.debug("resPQ(nonce={}, server_nonce={}, pq={}, fingerprints={}".format(Hex(nonce), Hex(server_nonce), Hex(pq), Hex(fingerprints)))
         if nonce != self.nonce:
             return False
         self.server_nonce = server_nonce
@@ -103,7 +113,7 @@ class Telegram:
                 server_public_key = rsa.PublicKey.load_pkcs1(f.read())
             # проверить отпечаток
             sha = SHA1(rsa_public_key.Dump(server_public_key.n, server_public_key.e))
-            logging.debug('Server public fingerprint: {!r}'.format(sha))
+            logging.debug('Server public fingerprint: {}'.format(Hex(sha)))
             for fp_id, fp in enumerate(fingerprints):
                 if fp == int.from_bytes(sha[-8:], 'little'):
                     fingerprint_id = fp_id
@@ -116,24 +126,27 @@ class Telegram:
             return False
         self.new_nonce = random.getrandbits(256)
         data = Box.Dump(p_q_inner_data.Create(pq, p, q, nonce, server_nonce, self.new_nonce))
-        encrypted_data = rsa.encrypt(data, server_public_key)
-        self.session.send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data))
+        data = SHA1(data) + data
+        data = data + random.getrandbits((255 - len(data))*8).to_bytes(255 - len(data), 'big')
+        encrypted_data = pow(int.from_bytes(data, 'big'), server_public_key.e, server_public_key.n).to_bytes(256, 'big')
+#         encrypted_data = rsa.encrypt(data, server_public_key)
+        self.session.Send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data), False)
         return True
         
     def process_server_DH_params_fail(self, nonce, server_nonce, new_nonce_hash):
-        logging.debug("server_DH_params_fail(nonce={!r}, server_nonce={!r}, new_nonce_hash={!r})".format(nonce, server_nonce, new_nonce_hash))
+        logging.debug("server_DH_params_fail(nonce={}, server_nonce={}, new_nonce_hash={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash)))
         return False
     
     def process_server_DH_params_ok(self, nonce, server_nonce, encrypted_answer):
-        logging.debug("server_DH_params_ok(nonce={!r}, server_nonce={!r}, encrypted_answer={!r})".format(nonce, server_nonce, encrypted_answer))
+        logging.debug("server_DH_params_ok(nonce={}, server_nonce={}, encrypted_answer={})".format(Hex(nonce), Hex(server_nonce), Hex(encrypted_answer)))
 
         if nonce != self.nonce:
             return False
         if server_nonce != self.server_nonce:
             return False
         
-        server_nonce_str = Int(16).Dump(server_nonce)
-        new_nonce_str = Int(16).Dump(self.new_nonce)
+        server_nonce_str = Int(128).Dump(server_nonce)
+        new_nonce_str = Int(256).Dump(self.new_nonce)
         sn_nn = SHA1(server_nonce_str + new_nonce_str)
         nn_sn = SHA1(new_nonce_str + server_nonce_str)
         nn_nn = SHA1(new_nonce_str + new_nonce_str)
@@ -141,40 +154,41 @@ class Telegram:
         tmp_aes_iv = sn_nn[12:20] + nn_nn + new_nonce_str[0:4]
         
         self.aes_ige = AES_IGE_TLG(tmp_aes_key, tmp_aes_iv)
-        answer = aes_ige.decrypt(encrypted_answer)
+        answer = self.aes_ige.decrypt(encrypted_answer)
         
         return self.Dispatch(answer)
     
     def process_server_DH_inner_data(self, nonce, server_nonce, g, p, g_a, server_time):
-        logging.debug("server_DH_inner_data(nonce={!r}, server_nonce={!r}, g={!r}, dh_prime={!r}, g_a={!r}, server_time={!r})".format(nonce, server_nonce, g, p, g_a, server_time))
+        logging.debug("server_DH_inner_data(nonce={}, server_nonce={}, g={}, dh_prime={}, g_a={}, server_time={})".format(Hex(nonce), Hex(server_nonce), Hex(g), Hex(p), Hex(g_a), Hex(server_time)))
     
         if nonce != self.nonce:
             return False
         if server_nonce != self.server_nonce:
             return False
         
+        self.session.time_offset = server_time - time()
+        
         b = random.getrandbits(2048)
         g_b = pow(g, b, p)
         g_ab = pow(g_a, b, p)
         
-        self.auth_key = g_ab.to_bytes(256, 'big')
-        self.auth_key_hash = SHA1(self.auth_key)[-8:]
+        self.session.auth_key = g_ab.to_bytes(256, 'big')
         
-        encrypted_data = aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
+        encrypted_data = self.aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
         self.retry_id += 1
-        self.send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False)
+        self.session.Send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False)
         return True
     
     def process_dh_gen_ok(self, nonce, server_nonce, new_nonce_hash1):
-        logging.debug("process_dh_gen_ok(nonce={!r}, server_nonce={!r}, new_nonce_hash1={!r})".format(nonce, server_nonce, new_nonce_hash1))
+        logging.debug("process_dh_gen_ok(nonce={}, server_nonce={}, new_nonce_hash1={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash1)))
         if nonce != self.nonce:
             return False
         if server_nonce != self.server_nonce:
             return False
         # TODO: проверить хэш
         with open(self.config['auth_key'], 'wb') as auth_key_file:
-            auth_key_file.write(auth_key)
-        self.salt = XOR.new(self.new_nonce[0:8]).encrypt(self.server_nonce[0:8])
+            auth_key_file.write(self.session.auth_key)
+        self.session.salt = XOR.new(self.new_nonce[0:8]).encrypt(self.server_nonce[0:8])
         del self.nonce
         del self.server_nonce
         del self.new_nonce
@@ -184,12 +198,12 @@ class Telegram:
         return True
     
     def process_dh_gen_retry(self, nonce, server_nonce, new_nonce_hash2):
-        logging.debug("process_dh_gen_retry(nonce={!r}, server_nonce={!r}, new_nonce_hash2={!r})".format(nonce, server_nonce, new_nonce_hash2))
+        logging.debug("process_dh_gen_retry(nonce={}, server_nonce={}, new_nonce_hash2={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash2)))
         # TODO: попробовать снова
         return False
     
     def process_dh_gen_fail(self, nonce, server_nonce, new_nonce_hash3):
-        logging.debug("process_dh_gen_fail(nonce={!r}, server_nonce={!r}, new_nonce_hash3={!r})".format(nonce, server_nonce, new_nonce_hash3))
+        logging.debug("process_dh_gen_fail(nonce={}, server_nonce={}, new_nonce_hash3={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash3)))
         # TODO: попробовать снова
         return False
 

@@ -18,15 +18,16 @@ class TcpSession:
         self.sock.connect((host, port))
     
     def Receive(self, timeout):
-        rlist, _, _ = select((self.sock,), (), (), timeout)
-        if len(rlist) == 0:
-            return
-        data = self.sock.recv(4096)
-        if len(data) == 0:
-            raise ConnectionError("Connection closed")
-        self.data += data
+        if len(self.data) < 4 or len(self.data) < int.from_bytes(self.data[:4], 'little'):
+            rlist, _, _ = select((self.sock,), (), (), timeout)
+            if len(rlist) == 0:
+                return
+            data = self.sock.recv(4096)
+            if len(data) == 0:
+                raise ConnectionError("Connection closed")
+            self.data += data
         data_len = int.from_bytes(self.data[:4], 'little')
-        if data_len > len(self.data):
+        if len(self.data) < data_len:
             return
         data = self.data[0:data_len]
         self.data = self.data[data_len:]
@@ -50,9 +51,10 @@ class CryptoSession(TcpSession):
     def __init__(self):
         TcpSession.__init__(self)
         self.message_id = 0
+        self.time_offset = 0
     
     def getMessageId(self):
-        msg_id = int(time() * (1 << 30)) * 4
+        msg_id = int((time() + self.time_offset)  * (1 << 30)) * 4
         if self.message_id >= msg_id:
             self.message_id += 4
         else:
@@ -63,6 +65,7 @@ class CryptoSession(TcpSession):
         data = super().Receive(timeout)
         if data is None:
             return None
+        logging.debug("Recv data: {}".format(self.Hex(data)))
         auth_key_id = data[0:8]
         if auth_key_id == b'\0\0\0\0\0\0\0\0':
             message_id = data[8:16]
@@ -76,8 +79,14 @@ class CryptoSession(TcpSession):
             pass
         else:
             data = b'\0\0\0\0\0\0\0\0' + self.getMessageId().to_bytes(8, "little") + len(data).to_bytes(4, "little") + data
+        logging.debug("Send data: {}".format(self.Hex(data)))
         return super().Send(data)
     
-    def SetKey(self, key):
-        pass
+    def __setattr__(self, name, value):
+        if name == "auth_key":
+            self.auth_key_id = SHA1(self.auth_key)[-8:]
+        return super().__setattr__(name, value)
     
+    def Hex(self, data):
+        return ''.join(('\n\t{:03x}0 |'.format(i) + ''.join((' {:02x}'.format(int.from_bytes(data[i*16+j:i*16+j+1], 'big')) for j in range(16) if i*16+j < len(data))) for i in range((len(data)-1)//16+1)))
+
