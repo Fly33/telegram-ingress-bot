@@ -2,23 +2,25 @@
 import logging
 import logging.handlers
 import traceback
+import yaml
+from optparse import OptionParser
+
 import rsa
 from Crypto.Cipher import XOR
 from Crypto.Random import random
+
 from crypto import *
 from format import *
 from session import CryptoSession, ConnectionError
 from maths import *
-import yaml
-from optparse import OptionParser
+from error import *
 
 AUTH_KEY_FILE = 'auth.key'
 PUBLIC_KEY_FILE = 'public.pem'
 
 class DataSession(CryptoSession):
-
     def __init__(self):
-        CryptoSession.__init__(self)
+        super().__init__()
 
     def Receive(self, timeout):
         data = super().Receive(timeout)
