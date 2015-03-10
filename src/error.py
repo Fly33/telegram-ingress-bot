@@ -7,3 +7,8 @@ class ConnectionError(RuntimeError):
 class SecurityError(RuntimeError):
     pass
 
+
+class DecryptError(RuntimeError):
+    pass
+
+

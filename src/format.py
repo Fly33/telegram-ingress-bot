@@ -148,6 +148,8 @@ Register('req_DH_params', 0xd712e4be, Int(128), Int(128), BigInt, BigInt, Long, 
 Register('rsa_public_key', 0x7a19cb76, BigInt, BigInt)
 Register('set_client_DH_params', 0xf5045f1f, Int(128), Int(128), String)
 Register('client_DH_inner_data', 0x6643b654, Int(128), Int(128), Long, BigInt)
+Register('ping', 0x7abe77ec, Long)
+Register('pong', 0x347773c5, Long, Long)
 
 if __name__ == "__main__":
     Register("test_struct", 0x12345678, Int(), Int())

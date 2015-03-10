@@ -14,9 +14,7 @@ from format import *
 from session import CryptoSession, ConnectionError
 from maths import *
 from error import *
-
-AUTH_KEY_FILE = 'auth.key'
-PUBLIC_KEY_FILE = 'public.pem'
+from timer import *
 
 class DataSession(CryptoSession):
     def __init__(self):
@@ -30,10 +28,6 @@ class DataSession(CryptoSession):
 
     def Send(self, data, encrypted=True):
         return super().Send(Box.Dump(data), encrypted)
-
-
-class DecryptError(RuntimeError):
-    pass
 
 
 class AES_IGE_TLG(AES_IGE):
@@ -64,6 +58,7 @@ def Hex(data):
 class Telegram:
     def __init__(self, config):
         self.config = config
+        self.timer = Timer()
         
     def Run(self):
         self.session = DataSession();
@@ -83,7 +78,8 @@ class Telegram:
         
         while True:
             try:
-                data = self.session.Receive(None) # тут ващет не ноль
+                data = self.session.Receive(self.timer.GetTimeout())
+                self.timer.Process()
                 if data is None:
                     continue
                 self.Dispatch(data)
@@ -92,7 +88,7 @@ class Telegram:
                 break
             except:
                 logging.error(traceback.format_exc())
-                break
+                break # TODO: может что-нить поумнее сделать?
     
     def Dispatch(self, data):
         if data[0] not in StructById:
@@ -196,7 +192,8 @@ class Telegram:
         del self.new_nonce
         del self.retry_id
         del self.aes_ige
-        # TODO: создать сессию
+
+        self.timer.Add(time(), lambda: self.session.Send(ping.Create(random.getrandbits(64))))
         return True
     
     def process_dh_gen_retry(self, nonce, server_nonce, new_nonce_hash2):
@@ -208,6 +205,15 @@ class Telegram:
         logging.debug("process_dh_gen_fail(nonce={}, server_nonce={}, new_nonce_hash3={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash3)))
         # TODO: попробовать снова
         return False
+    
+    def process_ping(self, ping_id):
+        logging.debug("process_ping(ping_id={})".format(ping_id))
+        self.session.Send(pong.Create(0, ping_id)) # ноль???
+        return True
+    
+    def process_pong(self, msg_id, ping_id):
+        logging.debug("process_pong(msg_id={}, ping_id={})".format(msg_id, ping_id))
+        return True
 
 def main():
     parser = OptionParser()
