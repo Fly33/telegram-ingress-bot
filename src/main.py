@@ -12,7 +12,7 @@ from Crypto.Random import random
 from crypto import *
 from format import *
 from session import CryptoSession, ConnectionError
-from maths import *
+from algorithm import *
 from error import *
 from timer import *
 
@@ -79,7 +79,6 @@ class Telegram:
         while True:
             try:
                 data = self.session.Receive(self.timer.GetTimeout())
-                self.timer.Process()
                 if data is None:
                     continue
                 self.Dispatch(data)

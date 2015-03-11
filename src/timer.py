@@ -1,11 +1,11 @@
 # -*- coding: utf8 -*-
 
-from heapq import *
-from time import time
+import time
+from algorihtm import Treap
 
 class Timer:
     def __init__(self):
-        self.heap = []
+        self.treap = Treap()
         self.timer_id = 0
     
     def New(self):
@@ -13,19 +13,18 @@ class Timer:
         return self.timer_id
     
     def Set(self, timer_id, time, callback, *args, **kwargs):
-        !!! treap???
-        heappush(self.heap, (time, callback, args, kwargs))
+        self.treap.Update(timer_id, (time, callback, args, kwargs))
+        
+    def Reset(self, timer_id):
+        self.treap.Remove(timer_id)
     
     def GetTimeout(self):
-        if len(self.heap) == 0:
-            return None
-        t = self.heap[0][0]
-        now = time()
-        if t <= now:
-            return 0
-        return now - t
-    
-    def Process(self):
-        while self.heap[0][0] <= time():
-            _, callback, args, kwargs = heappop(self.heap)
+        while True:
+            timer_id, value = self.treap.Top()
+            if timer_id is None:
+                return None
+            time, callback, args, kwargs = value
+            now = time.time()
+            if time > now:
+                return time - now
             callback(*args, **kwargs)
