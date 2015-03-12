@@ -73,6 +73,9 @@ class CryptoSession(TcpSession):
         self.time_offset = 0
         self.session_id = random.getrandbits(64).to_bytes(8, 'big')
         self.seq_no = 0
+        self.salt = None
+        self.auth_key_id = None
+        self.auth_key = None
     
     def getMessageId(self):
         msg_id = int((time() + self.time_offset)  * (1 << 30)) * 4
@@ -111,6 +114,9 @@ class CryptoSession(TcpSession):
         
     def Send(self, data, encrypted=True):
         if encrypted:
+            if self.salt is None or self.auth_key_id is None or self.auth_key is None:
+                logging.warning('Encrypted session was not estabilished.')
+                return
             data = self.salt + self.session_id + self.getMessageId().to_bytes(8, "little") + (self.seq_no*2).to_bytes(4, 'little') + len(data).to_bytes(4, 'little') + data
             self.seq_no += 1
             msg_key = SHA1(data)[-16:]
@@ -123,7 +129,8 @@ class CryptoSession(TcpSession):
     
     def __setattr__(self, name, value):
         if name == "auth_key":
-            self.auth_key_id = SHA1(self.auth_key)[-8:]
+            if isinstance(value, bytes): 
+                self.auth_key_id = SHA1(value)[-8:]
         return super().__setattr__(name, value)
     
     def Hex(self, data):

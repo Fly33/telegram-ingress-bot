@@ -1,7 +1,7 @@
 # -*- coding: utf8 -*-
 
-import time
-from algorihtm import Treap
+from time import time as Now
+from algorithm import Treap
 
 class Timer:
     def __init__(self):
@@ -23,8 +23,8 @@ class Timer:
             timer_id, value = self.treap.Top()
             if timer_id is None:
                 return None
+            now = Now()
             time, callback, args, kwargs = value
-            now = time.time()
             if time > now:
                 return time - now
             callback(*args, **kwargs)

@@ -4,6 +4,7 @@ import logging.handlers
 import traceback
 import yaml
 from optparse import OptionParser
+from time import time as Now
 
 import rsa
 from Crypto.Cipher import XOR
@@ -59,6 +60,7 @@ class Telegram:
     def __init__(self, config):
         self.config = config
         self.timer = Timer()
+        self.ping_timer_id = self.timer.New()
         
     def Run(self):
         self.session = DataSession();
@@ -72,7 +74,7 @@ class Telegram:
             logging.info("Generating new auth key.")
             self.retry_id = 0
             self.nonce = random.getrandbits(128)
-            self.session.Send(req_pq.Create(self.nonce), False)
+            self.Send(req_pq.Create(self.nonce), False)
         else:
             pass
         
@@ -88,6 +90,10 @@ class Telegram:
             except:
                 logging.error(traceback.format_exc())
                 break # TODO: может что-нить поумнее сделать?
+    
+    def Send(self, data, encrypted=True):
+        self.timer.Set(self.ping_timer_id, Now() + 1, self.Send, ping.Create(random.getrandbits(64)))
+        return self.session.Send(data, encrypted)
     
     def Dispatch(self, data):
         if data[0] not in StructById:
@@ -127,7 +133,7 @@ class Telegram:
         data = data + random.getrandbits((255 - len(data))*8).to_bytes(255 - len(data), 'big')
         encrypted_data = pow(int.from_bytes(data, 'big'), server_public_key.e, server_public_key.n).to_bytes(256, 'big')
 #         encrypted_data = rsa.encrypt(data, server_public_key)
-        self.session.Send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data), False)
+        self.Send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data), False)
         return True
         
     def process_server_DH_params_fail(self, nonce, server_nonce, new_nonce_hash):
@@ -163,7 +169,7 @@ class Telegram:
         if server_nonce != self.server_nonce:
             return False
         
-        self.session.time_offset = server_time - time()
+        self.session.time_offset = server_time - Now()
         
         b = random.getrandbits(2048)
         g_b = pow(g, b, p)
@@ -173,7 +179,7 @@ class Telegram:
         
         encrypted_data = self.aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.retry_id, g_b))
         self.retry_id += 1
-        self.session.Send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False)
+        self.Send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False)
         return True
     
     def process_dh_gen_ok(self, nonce, server_nonce, new_nonce_hash1):
@@ -185,14 +191,14 @@ class Telegram:
         # TODO: проверить хэш
         with open(self.config['auth_key'], 'wb') as auth_key_file:
             auth_key_file.write(self.session.auth_key)
-        self.session.salt = XOR.new(self.new_nonce[0:8]).encrypt(self.server_nonce[0:8])
+        self.session.salt = XOR.new(self.new_nonce.to_bytes(32, 'little')[0:8]).encrypt(self.server_nonce.to_bytes(16, 'little')[0:8])
         del self.nonce
         del self.server_nonce
         del self.new_nonce
         del self.retry_id
         del self.aes_ige
 
-        self.timer.Add(time(), lambda: self.session.Send(ping.Create(random.getrandbits(64))))
+        # TODO: получить код
         return True
     
     def process_dh_gen_retry(self, nonce, server_nonce, new_nonce_hash2):
@@ -207,7 +213,7 @@ class Telegram:
     
     def process_ping(self, ping_id):
         logging.debug("process_ping(ping_id={})".format(ping_id))
-        self.session.Send(pong.Create(0, ping_id)) # ноль???
+        self.Send(pong.Create(0, ping_id)) # ноль???
         return True
     
     def process_pong(self, msg_id, ping_id):
