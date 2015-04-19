@@ -82,8 +82,6 @@ def Vector(tipe):
         def Parse(cls, data, offset=0):
             result = []
             reslen = 0
-            _, ln = Int().Parse(data, offset) # 0x1cb5c415
-            reslen += ln
             count, ln = Int().Parse(data, offset+reslen)
             reslen += ln
             for _ in range(count):
@@ -94,10 +92,30 @@ def Vector(tipe):
         
         @classmethod
         def Dump(cls, value):
-            result = b''
+            result = Int().Dump(len(value))
             for val in value:
                 result += tipe.Dump(val)
+            return result
                 
+    return vector_cl
+
+def VectorBox(tipe):
+    class vector_cl(Vector(tipe)):
+        @classmethod
+        def Parse(cls, data, offset=0):
+            reslen = 0
+            _, ln = Int().Parse(data, offset+reslen) # 0x1cb5c415
+            reslen += ln
+            result, ln = super().Parse(data, offset+reslen)
+            reslen += ln
+            return (result, reslen)
+        
+        @classmethod
+        def Dump(cls, value):
+            result = Int().Dump(0x1cb5c415)
+            result += super().Dump(value)
+            return result
+    
     return vector_cl
 
 StructById = {}
@@ -137,7 +155,7 @@ class Box:
             return cls.Dump(*values[0])
         return Int().Dump(values[0]) + StructById[values[0]].Dump(*values[1:])
 
-Register('resPQ', 0x05162463, Int(128), Int(128), BigInt, Vector(Long))
+Register('resPQ', 0x05162463, Int(128), Int(128), BigInt, VectorBox(Long))
 Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
 Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String)
 Register('server_DH_inner_data', 0xb5890dba, Int(128), Int(128), Int(), BigInt, BigInt, Int()) 
@@ -152,6 +170,9 @@ Register('set_client_DH_params', 0xf5045f1f, Int(128), Int(128), String)
 Register('client_DH_inner_data', 0x6643b654, Int(128), Int(128), Long, BigInt)
 Register('ping', 0x7abe77ec, Long)
 Register('pong', 0x347773c5, Long, Long)
+Register('message', 0x5bb8e511, Long, Int(), Int(), Box)
+Register('msg_container', 0x73f1f8dc, Vector(message))
+Register('new_session_created', 0x9ec20908, Long, Long, Long)
 
 if __name__ == "__main__":
     Register("test_struct", 0x12345678, Int(), Int())

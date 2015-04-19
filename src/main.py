@@ -220,6 +220,20 @@ class Telegram:
     def process_pong(self, msg_id, ping_id):
         logging.debug("process_pong(msg_id={}, ping_id={})".format(msg_id, ping_id))
         return True
+    
+    def process_msg_container(self, messages):
+        logging.debug("process_msg_container(messages={}):".format(messages))
+        for message in messages:
+            self.Dispatch(message)
+        return True
+
+    def process_new_session_created(self, first_msg_id, unique_id, server_salt):
+        logging.debug("process_new_session_created(first_msg_id={}, unique_id={}, server_salt={})".format(first_msg_id, unique_id, server_salt))
+        self.session.salt = server_salt
+        self.session.message_id = first_msg_id
+        # TODO: подтвердить сообщение
+        return True
+    
 
 def main():
     parser = OptionParser()
