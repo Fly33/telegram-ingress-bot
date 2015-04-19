@@ -67,6 +67,7 @@ class Telegram:
         self.session.Connect(self.config['address']['host'], self.config['address']['port'])
     
         try:
+            raise
             with open(self.config['auth_key'], 'rb') as auth_key_file:
                 self.session.auth_key = auth_key_file.read()
             logging.info("Auth key is loaded.")

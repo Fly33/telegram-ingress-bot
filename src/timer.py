@@ -2,6 +2,7 @@
 
 from time import time as Now
 from algorithm import Treap
+import logging
 
 class Timer:
     def __init__(self):
@@ -27,4 +28,5 @@ class Timer:
             time, callback, args, kwargs = value
             if time > now:
                 return time - now
+            logging.debug("Ivoking timer {}".format(timer_id))
             callback(*args, **kwargs)

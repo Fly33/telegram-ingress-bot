@@ -58,8 +58,8 @@ class AES_IGE_SESSION(AES_IGE):
         else:
             raise ValueError("Invalid dir value: {}".format(dir))
         sha1_a = SHA1(msg_key + auth_key[x:x+32])
-        sha1_b = SHA1(auth_key[32+x:32+x+16] + msg_key + auth_key[48+x, 48+x+16])
-        sha1_с = SHA1(auth_key[64+x:64+x+32] + msg_key)
+        sha1_b = SHA1(auth_key[32+x:32+x+16] + msg_key + auth_key[48+x:48+x+16])
+        sha1_c = SHA1(auth_key[64+x:64+x+32] + msg_key)
         sha1_d = SHA1(msg_key + auth_key[96+x:96+x+32])
         aes_key = sha1_a[0:8] + sha1_b[8:20] + sha1_c[4:16]
         aes_iv = sha1_a[8:20] + sha1_b[0:8] + sha1_c[16:20] + sha1_d[0:8]
@@ -100,10 +100,11 @@ class CryptoSession(TcpSession):
             if auth_key_id != self.auth_key_id:
                 raise SecurityError('Invalid auth key id')
             msg_key = data[8:24]
-            aes_ige = AES_IGE_SESSION(msg_key, self.auth_key)
+            aes_ige = AES_IGE_SESSION(msg_key, self.auth_key, "in")
             data = aes_ige.decrypt(data[24:])
-            if msg_key != SHA1(data)[-16:]:
-                raise SecurityError('Invalid msg key')
+            # TODO: как-нить это проверить
+#             if msg_key != SHA1(data)[-16:]:
+#                 raise SecurityError('Invalid msg key')
             salt = data[0:8]
             session_id = data[8:16]
             message_id = int.from_bytes(data[16:24], 'little')
@@ -121,6 +122,9 @@ class CryptoSession(TcpSession):
             self.seq_no += 1
             msg_key = SHA1(data)[-16:]
             aes_ige = AES_IGE_SESSION(msg_key, self.auth_key, "out")
+            if len(data) % 16 != 0:
+                align_size = 15 - (len(data)-1) % 16
+                data += random.getrandbits(align_size * 8).to_bytes(align_size, 'big')
             data = self.auth_key_id + msg_key + aes_ige.encrypt(data)
         else:
             data = b'\0\0\0\0\0\0\0\0' + self.getMessageId().to_bytes(8, "little") + len(data).to_bytes(4, "little") + data

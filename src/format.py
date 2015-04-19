@@ -126,6 +126,8 @@ class Box:
     @classmethod
     def Parse(cls, data, offset=0):
         tipe, ln = Int().Parse(data, offset)
+        if tipe not in StructById:
+            raise KeyError("Unknown hash id {:x}".format(tipe))
         data, data_len = StructById[tipe].Parse(data, offset+ln)
         return ((tipe,) + data, ln + data_len)
     

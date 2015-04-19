@@ -13,6 +13,8 @@ class AES_IGE:
         self.aes = AES.new(key, AES.MODE_ECB)
     
     def encrypt(self, data):
+        if len(data) % 16 != 0:
+            raise ValueError("Input strings must be a multiple of 16 in length")
         result = b''
         x = self.iv[0:16]
         y = self.iv[16:32]
@@ -27,6 +29,8 @@ class AES_IGE:
         return result
 
     def decrypt(self, data):
+        if len(data) % 16 != 0:
+            raise ValueError("Input strings must be a multiple of 16 in length")
         result = b''
         x = self.iv[16:32]
         y = self.iv[0:16]
