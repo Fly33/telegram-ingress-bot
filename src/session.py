@@ -94,7 +94,7 @@ class CryptoSession(TcpSession):
         if auth_key_id == b'\0\0\0\0\0\0\0\0':
             message_id = int.from_bytes(data[8:16], 'little')
             message_len = int.from_bytes(data[16:20], 'little')
-            return data[20:]
+            return message_id, -1, data[20:]
         else:
             auth_key_id = data[0:8]
             if auth_key_id != self.auth_key_id:
@@ -111,7 +111,7 @@ class CryptoSession(TcpSession):
             # TODO: проверить message_id
             seq_no = int.from_bytes(data[24:28], 'little')
             message_len = int.from_bytes(data[28:32], 'little')
-            return data[32:32+message_len]
+            return message_id, seq_no, data[32:32+message_len]
         
     def Send(self, data, encrypted=True):
         if encrypted:
