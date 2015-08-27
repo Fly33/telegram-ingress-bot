@@ -84,9 +84,9 @@ class Telegram:
         while True:
             try:
                 message = self.session.Receive(self.timer.GetTimeout())
-                if message is None:
-                    continue
-                self.Dispatch(*message)
+                if message is not None:
+                    self.Dispatch(*message)
+                self.timer.Process()
             except ConnectionError:
                 # TODO: reconnect
                 break
@@ -249,6 +249,32 @@ class MessageHandler:
         self.application.session.salt = Long.Dump(server_salt)
         self.application.session.message_id = first_msg_id
         # TODO: подтвердить сообщение
+        return True
+    
+    def process_bad_msg_notification(self, bad_msg_id, bad_msg_seqno, error_code):
+        logging.debug("process_bad_msg_notification(bad_msg_id={}, bad_msg_seqno={}, error_code={})".format(bad_msg_id, bad_msg_seqno, error_code))
+        if error_code == 16:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_id too low (most likely, client time is wrong; it would be worthwhile to synchronize it using msg_id notifications and re-send the original message with the “correct” msg_id or wrap it in a container with a new msg_id if the original message had waited too long on the client to be transmitted)".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 17:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_id too high (similar to the previous case, the client time has to be synchronized, and the message re-sent with the correct msg_id)".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 18:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): incorrect two lower order msg_id bits (the server expects client message msg_id to be divisible by 4)".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 19:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): container msg_id is the same as msg_id of a previously received message (this must never happen)".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 20:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): message too old, and it cannot be verified whether the server has received a message with this msg_id or not".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 32:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_seqno too low (the server has already received a message with a lower msg_id but with either a higher or an equal and odd seqno)".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 33:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_seqno too high (similarly, there is a message with a higher msg_id but with either a lower or an equal and odd seqno)".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 34:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): an even msg_seqno expected (irrelevant message), but odd received".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 35:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): odd msg_seqno expected (relevant message), but even received".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 48:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): incorrect server salt (in this case, the bad_server_salt response is received with the correct salt, and the message is to be re-sent with it)".format(bad_msg_id, bad_msg_seqno, error_code))
+        elif error_code == 64:
+            logging.error("Bad message (msgid={}, seqno={}, error={}): invalid container.".format(bad_msg_id, bad_msg_seqno, error_code))
         return True
     
 

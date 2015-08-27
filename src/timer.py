@@ -20,13 +20,19 @@ class Timer:
         self.treap.Remove(timer_id)
     
     def GetTimeout(self):
-        while True:
+        timer_id, value = self.treap.Top()
+        if timer_id is None:
+            return None
+        now = Now()
+        time, callback, args, kwargs = value
+        if time > now:
+            return time - now
+        return 0
+    
+    def Process(self):
+        while self.GetTimeout() == 0:
             timer_id, value = self.treap.Top()
-            if timer_id is None:
-                return None
-            now = Now()
             time, callback, args, kwargs = value
-            if time > now:
-                return time - now
             logging.debug("Ivoking timer {}".format(timer_id))
+            self.Reset(timer_id)
             callback(*args, **kwargs)
