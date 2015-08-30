@@ -1,6 +1,5 @@
 # -*- coding: utf8 -*-
 import logging
-from time import time
 from socket import socket
 from select import select
 from Crypto.Random import random
@@ -69,32 +68,20 @@ class AES_IGE_SESSION(AES_IGE):
 class CryptoSession(TcpSession):
     def __init__(self):
         super().__init__()
-        self.message_id = 0
-        self.time_offset = 0
         self.session_id = random.getrandbits(64).to_bytes(8, 'big')
-        self.seq_no = 0
         self.salt = None
         self.auth_key_id = None
         self.auth_key = None
-    
-    def getMessageId(self):
-        msg_id = int((time() + self.time_offset)  * (1 << 30)) * 4
-        if self.message_id >= msg_id:
-            self.message_id += 4
-        else:
-            self.message_id = msg_id
-        return self.message_id
     
     def Receive(self, timeout):
         data = super().Receive(timeout)
         if data is None:
             return None
-        logging.debug("Recv data: {}".format(self.Hex(data)))
         auth_key_id = data[0:8]
         if auth_key_id == b'\0\0\0\0\0\0\0\0':
             message_id = int.from_bytes(data[8:16], 'little')
             message_len = int.from_bytes(data[16:20], 'little')
-            return message_id, -1, data[20:]
+            return message_id, None, data[20:]
         else:
             auth_key_id = data[0:8]
             if auth_key_id != self.auth_key_id:
@@ -113,13 +100,12 @@ class CryptoSession(TcpSession):
             message_len = int.from_bytes(data[28:32], 'little')
             return message_id, seq_no, data[32:32+message_len]
         
-    def Send(self, data, encrypted=True):
+    def Send(self, message_id, seq_no, data, encrypted=True):
         if encrypted:
             if self.salt is None or self.auth_key_id is None or self.auth_key is None:
                 logging.warning('Encrypted session was not estabilished.')
                 return
-            data = self.salt + self.session_id + self.getMessageId().to_bytes(8, "little") + (self.seq_no*2).to_bytes(4, 'little') + len(data).to_bytes(4, 'little') + data
-            self.seq_no += 1
+            data = self.salt + self.session_id + message_id.to_bytes(8, "little") + seq_no.to_bytes(4, 'little') + len(data).to_bytes(4, 'little') + data
             msg_key = SHA1(data)[-16:]
             aes_ige = AES_IGE_SESSION(msg_key, self.auth_key, "out")
             if len(data) % 16 != 0:
@@ -127,8 +113,7 @@ class CryptoSession(TcpSession):
                 data += random.getrandbits(align_size * 8).to_bytes(align_size, 'big')
             data = self.auth_key_id + msg_key + aes_ige.encrypt(data)
         else:
-            data = b'\0\0\0\0\0\0\0\0' + self.getMessageId().to_bytes(8, "little") + len(data).to_bytes(4, "little") + data
-        logging.debug("Send data: {}".format(self.Hex(data)))
+            data = b'\0\0\0\0\0\0\0\0' + message_id.to_bytes(8, "little") + len(data).to_bytes(4, "little") + data
         return super().Send(data)
     
     def __setattr__(self, name, value):
@@ -136,7 +121,4 @@ class CryptoSession(TcpSession):
             if isinstance(value, bytes): 
                 self.auth_key_id = SHA1(value)[-8:]
         return super().__setattr__(name, value)
-    
-    def Hex(self, data):
-        return ''.join(('\n\t{:03x}0 |'.format(i) + ''.join((' {:02x}'.format(int.from_bytes(data[i*16+j:i*16+j+1], 'big')) for j in range(16) if i*16+j < len(data))) for i in range((len(data)-1)//16+1)))
 

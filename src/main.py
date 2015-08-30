@@ -27,11 +27,17 @@ class DataSession(CryptoSession):
         if message is None:
             return None
         id, seq, data = message
+        logging.debug("Recv data: {}".format(self.Hex(data)))
         return (id, seq, Box.Parse(data)[0])
 
-    def Send(self, data, encrypted=True):
-        return super().Send(Box.Dump(data), encrypted)
+    def Send(self, message_id, seq_no, data, encrypted=True):
+        data = Box.Dump(data)
+        logging.debug("Send data: {}".format(self.Hex(data)))
+        return super().Send(message_id, seq_no, data, encrypted)
 
+    @staticmethod
+    def Hex(data):
+        return ''.join(('\n\t{:03x}0 |'.format(i) + ''.join((' {:02x}'.format(int.from_bytes(data[i*16+j:i*16+j+1], 'big')) for j in range(16) if i*16+j < len(data))) for i in range((len(data)-1)//16+1)))
 
 class AES_IGE_TLG(AES_IGE):
     def encrypt(self, data):
@@ -63,13 +69,18 @@ class Telegram:
         self.config = config
         self.timer = Timer()
         self.ping_timer_id = self.timer.New()
+        self.message_id = 0
+        self.n_relevant = 0
+        self.time_offset = 0
+        self.queue = []
+        self.acks = []
         
     def Run(self):
         self.session = DataSession();
         self.session.Connect(self.config['address']['host'], self.config['address']['port'])
     
         try:
-            raise
+            raise # TODO: убрать
             with open(self.config['auth_key'], 'rb') as auth_key_file:
                 self.session.auth_key = auth_key_file.read()
             logging.info("Auth key is loaded.")
@@ -77,7 +88,7 @@ class Telegram:
             logging.info("Generating new auth key.")
             self.retry_id = 0
             self.nonce = random.getrandbits(128)
-            self.Send(req_pq.Create(self.nonce), False)
+            self.Send(req_pq.Create(self.nonce), False, False)
         else:
             pass
         
@@ -87,6 +98,7 @@ class Telegram:
                 if message is not None:
                     self.Dispatch(*message)
                 self.timer.Process()
+                self.Flush()
             except ConnectionError:
                 # TODO: reconnect
                 break
@@ -94,13 +106,48 @@ class Telegram:
                 logging.error(traceback.format_exc())
                 break # TODO: может что-нить поумнее сделать?
     
-    def Send(self, data, encrypted=True):
-        self.timer.Set(self.ping_timer_id, Now() + 1, self.Send, ping.Create(random.getrandbits(64)))
-        return self.session.Send(data, encrypted)
+    def getMessageId(self):
+        msg_id = int((Now() + self.time_offset)  * (1 << 30)) * 4
+        if self.message_id >= msg_id:
+            self.message_id += 4
+        else:
+            self.message_id = msg_id
+        return self.message_id
     
-    def Dispatch(self, id, seq, data):
-        logging.debug("Message: id={}, seqno={}, data={}".format(id, seq, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
-        message_handler = MessageHandler(self, id, seq)
+    def getSeqNo(self, relevant=True):
+        seq_no = self.n_relevant * 2
+        if relevant:
+            seq_no += 1
+            self.n_relevant += 1
+        return seq_no
+        
+    def Send(self, data, relevant=True, encrypted=True):
+        self.timer.Set(self.ping_timer_id, Now() + 1, self.Queue, ping.Create(random.getrandbits(64)), relevant=False)
+        seq_no = self.getSeqNo(relevant)
+        msg_id = self.getMessageId()
+        logging.debug('Sending message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
+        return self.session.Send(msg_id, seq_no, data, encrypted)
+    
+    def Queue(self, data, relevant=True):
+        seq_no = self.getSeqNo(relevant)
+        msg_id = self.getMessageId()
+        logging.debug('Queueing message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
+        self.queue.append((msg_id, seq_no, data))
+        return True
+
+    def Flush(self):
+        if self.acks:
+            self.Queue(msgs_ack.Create(self.acks), relevant=False)
+            self.acks = []
+        if not self.queue:
+            return True
+        msg_cont = msg_container.Create(self.queue)
+        self.queue = []
+        return self.Send(msg_cont, relevant=False)
+    
+    def Dispatch(self, message_id, seq_no, data):
+        logging.debug("Received message: msgid={}, seqno={}, data={}".format(message_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
+        message_handler = MessageHandler(self, message_id, seq_no)
         return message_handler.Dispatch(data)
 
 
@@ -116,8 +163,15 @@ class MessageHandler:
             return
         return getattr(self, 'process_' + StructById[data[0]].Name())(*data[1:])
     
-    def Send(self, data, encrypted=True):
-        self.application.Send(data, encrypted)
+    def Send(self, data, relevant=True, encrypted=True):
+        if encrypted:
+            return self.application.Queue(data, relevant)
+        else:
+            return self.application.Send(data, relevant, encrypted)
+        
+    def Ack(self):
+        self.application.acks.append(self.message_id)
+        return True
         
     def process_resPQ(self, nonce, server_nonce, pq, fingerprints):
         logging.debug("resPQ(nonce={}, server_nonce={}, pq={}, fingerprints={}".format(Hex(nonce), Hex(server_nonce), Hex(pq), Hex(fingerprints)))
@@ -150,7 +204,7 @@ class MessageHandler:
         data = data + random.getrandbits((255 - len(data))*8).to_bytes(255 - len(data), 'big')
         encrypted_data = pow(int.from_bytes(data, 'big'), server_public_key.e, server_public_key.n).to_bytes(256, 'big')
 #         encrypted_data = rsa.encrypt(data, server_public_key)
-        self.Send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data), False)
+        self.Send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data), False, False)
         return True
         
     def process_server_DH_params_fail(self, nonce, server_nonce, new_nonce_hash):
@@ -186,7 +240,7 @@ class MessageHandler:
         if server_nonce != self.application.server_nonce:
             return False
         
-        self.application.session.time_offset = server_time - Now()
+        self.application.time_offset = server_time - Now()
         
         b = random.getrandbits(2048)
         g_b = pow(g, b, p)
@@ -196,7 +250,7 @@ class MessageHandler:
         
         encrypted_data = self.application.aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.application.retry_id, g_b))
         self.application.retry_id += 1
-        self.Send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False)
+        self.Send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False, False)
         return True
     
     def process_dh_gen_ok(self, nonce, server_nonce, new_nonce_hash1):
@@ -230,7 +284,7 @@ class MessageHandler:
     
     def process_ping(self, ping_id):
         logging.debug("process_ping(ping_id={})".format(ping_id))
-        self.Send(pong.Create(self.message_id, ping_id))
+        self.Send(pong.Create(self.message_id, ping_id), relevant=False)
         return True
     
     def process_pong(self, msg_id, ping_id):
@@ -239,7 +293,7 @@ class MessageHandler:
     
     def process_msg_container(self, messages):
         logging.debug("process_msg_container(messages={}):".format(messages))
-        for message_id, seqno, _, data in messages:
+        for message_id, seqno, data in messages:
             if not self.application.Dispatch(message_id, seqno, data):
                 return False
         return True
@@ -248,7 +302,7 @@ class MessageHandler:
         logging.debug("process_new_session_created(first_msg_id={}, unique_id={}, server_salt={})".format(first_msg_id, unique_id, server_salt))
         self.application.session.salt = Long.Dump(server_salt)
         self.application.session.message_id = first_msg_id
-        # TODO: подтвердить сообщение
+        self.Ack()
         return True
     
     def process_bad_msg_notification(self, bad_msg_id, bad_msg_seqno, error_code):
