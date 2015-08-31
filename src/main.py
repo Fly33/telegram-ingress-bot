@@ -121,29 +121,33 @@ class Telegram:
             self.n_relevant += 1
         return seq_no
         
-    def Send(self, data, relevant=True, encrypted=True):
-        self.timer.Set(self.ping_timer_id, Now() + 1, self.Queue, ping.Create(random.getrandbits(64)), relevant=False)
-        seq_no = self.getSeqNo(relevant)
-        msg_id = self.getMessageId()
+    def _Send(self, msg_id, seq_no, data, encrypted=True):
         logging.debug('Sending message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
+        self.timer.Set(self.ping_timer_id, Now() + 1, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
         return self.session.Send(msg_id, seq_no, data, encrypted)
-    
-    def Queue(self, data, relevant=True):
-        seq_no = self.getSeqNo(relevant)
+        
+    def Send(self, data, relevant=True, encrypted=True):
         msg_id = self.getMessageId()
+        seq_no = self.getSeqNo(relevant)
         logging.debug('Queueing message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
-        self.queue.append((msg_id, seq_no, data))
-        return True
-
+        # TODO: сделать перезапрос акков?
+        if encrypted:
+            self.queue.append((msg_id, seq_no, data))
+            return True
+        return self._Send(msg_id, seq_no, data, encrypted)
+    
     def Flush(self):
         if self.acks:
-            self.Queue(msgs_ack.Create(self.acks), relevant=False)
+            self.Send(msgs_ack.Create(self.acks), relevant=False)
             self.acks = []
         if not self.queue:
             return True
-        msg_cont = msg_container.Create(self.queue)
+        if len(self.queue) == 1:
+            msg_id, seq_no, data = self.queue[0]
+        else:
+            msg_id, seq_no, data = self.getMessageId(), self.getSeqNo(False), msg_container.Create(self.queue)
         self.queue = []
-        return self.Send(msg_cont, relevant=False)
+        return self._Send(msg_id, seq_no, data)
     
     def Dispatch(self, message_id, seq_no, data):
         logging.debug("Received message: msgid={}, seqno={}, data={}".format(message_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
@@ -164,10 +168,7 @@ class MessageHandler:
         return getattr(self, 'process_' + StructById[data[0]].Name())(*data[1:])
     
     def Send(self, data, relevant=True, encrypted=True):
-        if encrypted:
-            return self.application.Queue(data, relevant)
-        else:
-            return self.application.Send(data, relevant, encrypted)
+        return self.application.Send(data, relevant, encrypted)
         
     def Ack(self):
         self.application.acks.append(self.message_id)
@@ -331,6 +332,10 @@ class MessageHandler:
             logging.error("Bad message (msgid={}, seqno={}, error={}): invalid container.".format(bad_msg_id, bad_msg_seqno, error_code))
         return True
     
+    def process_msgs_ack(self, msg_ids):
+        logging.debug("process_msgs_ack(msg_ids={}):".format(msg_ids))
+        # TODO: отметить сообщения как полученные
+        return True    
 
 def main():
     parser = OptionParser()
