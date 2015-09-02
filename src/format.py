@@ -2,18 +2,28 @@
 import logging
 import struct
 
-def Int(size=32):
-    assert(size % 8 == 0)
-    size //= 8
+def Int(base_size=32):
+    assert(base_size % 8 == 0)
+    base_size //= 8
+    
     class int_cl:
+        size = base_size
+        
         @classmethod
         def Parse(cls, data, offset=0):
-            return (int.from_bytes(data[offset:offset+size], 'little'), size)
+            return (int.from_bytes(data[offset:offset+cls.size], 'little'), cls.size)
         
         @classmethod
         def Dump(cls, value):
-            return value.to_bytes(size, 'little')
+            return value.to_bytes(cls.size, 'little')
+        
+        Int = staticmethod(Int)
+        def __new__(cls, size=32):
+            return cls.Int(size)
+    
     return int_cl
+
+Int = Int()
 
 class Long(Int(64)):
     pass
@@ -82,7 +92,7 @@ def Vector(tipe):
         def Parse(cls, data, offset=0):
             result = []
             reslen = 0
-            count, ln = Int().Parse(data, offset+reslen)
+            count, ln = Int.Parse(data, offset+reslen)
             reslen += ln
             for _ in range(count):
                 dt, ln = tipe.Parse(data, offset+reslen)
@@ -92,7 +102,7 @@ def Vector(tipe):
         
         @classmethod
         def Dump(cls, value):
-            result = Int().Dump(len(value))
+            result = Int.Dump(len(value))
             for val in value:
                 result += tipe.Dump(val)
             return result
@@ -104,7 +114,7 @@ def VectorBox(tipe):
         @classmethod
         def Parse(cls, data, offset=0):
             reslen = 0
-            _, ln = Int().Parse(data, offset+reslen) # 0x1cb5c415
+            _, ln = Int.Parse(data, offset+reslen) # 0x1cb5c415
             reslen += ln
             result, ln = super().Parse(data, offset+reslen)
             reslen += ln
@@ -112,7 +122,7 @@ def VectorBox(tipe):
         
         @classmethod
         def Dump(cls, value):
-            result = Int().Dump(0x1cb5c415)
+            result = Int.Dump(0x1cb5c415)
             result += super().Dump(value)
             return result
     
@@ -143,7 +153,7 @@ def Register(name, hash, *args):
 class Box:
     @classmethod
     def Parse(cls, data, offset=0):
-        tipe, ln = Int().Parse(data, offset)
+        tipe, ln = Int.Parse(data, offset)
         if tipe not in StructById:
             raise KeyError("Unknown hash id {:x}".format(tipe))
         data, data_len = StructById[tipe].Parse(data, offset+ln)
@@ -153,24 +163,24 @@ class Box:
     def Dump(cls, *values):
         if len(values) == 1 and isinstance(values[0], tuple):
             return cls.Dump(*values[0])
-        return Int().Dump(values[0]) + StructById[values[0]].Dump(*values[1:])
+        return Int.Dump(values[0]) + StructById[values[0]].Dump(*values[1:])
 
 class MesuredBox(Box):
     @classmethod
     def Parse(cls, data, offset=0):
-        _, ln = Int().Parse(data, offset)
+        _, ln = Int.Parse(data, offset)
         data, data_len = Box.Parse(data, offset+ln)
         return (data, ln + data_len)
     
     @classmethod
     def Dump(cls, *values):
         data = Box.Dump(*values)
-        return Int().Dump(len(data)) + data
+        return Int.Dump(len(data)) + data
 
 Register('resPQ', 0x05162463, Int(128), Int(128), BigInt, VectorBox(Long))
 Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
 Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String)
-Register('server_DH_inner_data', 0xb5890dba, Int(128), Int(128), Int(), BigInt, BigInt, Int()) 
+Register('server_DH_inner_data', 0xb5890dba, Int(128), Int(128), Int, BigInt, BigInt, Int) 
 Register('dh_gen_ok', 0x3bcbf734, Int(128), Int(128), Int(128))
 Register('dh_gen_retry', 0x46dc1fb9, Int(128), Int(128), Int(128))
 Register('dh_gen_fail', 0xa69dae02, Int(128), Int(128), Int(128))
@@ -182,14 +192,14 @@ Register('set_client_DH_params', 0xf5045f1f, Int(128), Int(128), String)
 Register('client_DH_inner_data', 0x6643b654, Int(128), Int(128), Long, BigInt)
 Register('ping', 0x7abe77ec, Long)
 Register('pong', 0x347773c5, Long, Long)
-Register('message', 0x5bb8e511, Long, Int(), MesuredBox)
+Register('message', 0x5bb8e511, Long, Int, MesuredBox)
 Register('msg_container', 0x73f1f8dc, Vector(message))
 Register('new_session_created', 0x9ec20908, Long, Long, Long)
-Register('bad_msg_notification', 0xa7eff811, Long, Int(), Int())
+Register('bad_msg_notification', 0xa7eff811, Long, Int, Int)
 Register('msgs_ack', 0x62d6b459, VectorBox(Long))
 
 if __name__ == "__main__":
-    Register("test_struct", 0x12345678, Int(), Int())
+    Register("test_struct", 0x12345678, Int, Int)
 
     test_cl = StructByName['test_struct']
     t = test_cl()
