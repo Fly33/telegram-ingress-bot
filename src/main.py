@@ -122,14 +122,14 @@ class Telegram:
         return seq_no
         
     def _Send(self, msg_id, seq_no, data, encrypted=True):
-        logging.debug('Sending message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
+        logging.debug('Sending message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, Box[data[0]].Name() if data[0] in Box else "<unknown>"))
         self.timer.Set(self.ping_timer_id, Now() + 1, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
         return self.session.Send(msg_id, seq_no, data, encrypted)
         
     def Send(self, data, relevant=True, encrypted=True):
         msg_id = self.getMessageId()
         seq_no = self.getSeqNo(relevant)
-        logging.debug('Queueing message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
+        logging.debug('Queueing message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, Box[data[0]].Name() if data[0] in Box else "<unknown>"))
         # TODO: сделать перезапрос акков?
         if encrypted:
             self.queue.append((msg_id, seq_no, data))
@@ -150,7 +150,7 @@ class Telegram:
         return self._Send(msg_id, seq_no, data)
     
     def Dispatch(self, message_id, seq_no, data):
-        logging.debug("Received message: msgid={}, seqno={}, data={}".format(message_id, seq_no, StructById[data[0]].Name() if data[0] in StructById else "<unknown>"))
+        logging.debug("Received message: msgid={}, seqno={}, data={}".format(message_id, seq_no, Box[data[0]].Name() if data[0] in Box else "<unknown>"))
         message_handler = MessageHandler(self, message_id, seq_no)
         return message_handler.Dispatch(data)
 
@@ -162,10 +162,10 @@ class MessageHandler:
         self.seqno = seqno
     
     def Dispatch(self, data):
-        if data[0] not in StructById:
+        if data[0] not in Box:
             logging.debug('Unknown response: {}'.format(hex(data[0])))
             return
-        return getattr(self, 'process_' + StructById[data[0]].Name())(*data[1:])
+        return getattr(self, 'process_' + Box[data[0]].Name())(*data[1:])
     
     def Send(self, data, relevant=True, encrypted=True):
         return self.application.Send(data, relevant, encrypted)
@@ -335,6 +335,14 @@ class MessageHandler:
     def process_msgs_ack(self, msg_ids):
         logging.debug("process_msgs_ack(msg_ids={}):".format(msg_ids))
         # TODO: отметить сообщения как полученные
+        return True
+    
+    def process_rpc_result(self, req_msg_id, result):
+        logging.debug("process_rpc_result(req_msg_id={}, result={})".format(req_msg_id, result))
+        return True
+    
+    def process_rpc_error(self, error_code, error_message):
+        logging.debug("process_rpc_error(error_code={}, error_message={})".format(error_code, error_message))
         return True    
 
 def main():

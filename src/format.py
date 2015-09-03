@@ -128,42 +128,53 @@ def VectorBox(tipe):
     
     return vector_cl
 
-StructById = {}
-StructByName = {}
+class BoxType(type):
+    def __init__(self, *args, **kwargs):
+        self.dict = {}
+        super().__init__(*args, **kwargs)
+    def __getitem__(self, key):
+        return self.dict[key]
+    def __contains__(self, key):
+        return key in self.dict
+    def __setitem__(self, key, value):
+        self.dict[key] = value
 
-def Register(name, hash, *args):
-    class struct_cl(Tuple(*args)):
-        @classmethod
-        def Name(cls):
-            return name
-        
-        @classmethod
-        def Hash(cls):
-            return hash
-        
-        @classmethod
-        def Create(cls, *args):
-            # TODO: вставить проверку типов?
-            return (hash,) + args
-
-    StructById[hash] = struct_cl
-    StructByName[name] = struct_cl
-    globals()[name] = struct_cl
-
-class Box:
+class Box(metaclass=BoxType):
     @classmethod
     def Parse(cls, data, offset=0):
         tipe, ln = Int.Parse(data, offset)
-        if tipe not in StructById:
+        if tipe not in cls:
             raise KeyError("Unknown hash id {:x}".format(tipe))
-        data, data_len = StructById[tipe].Parse(data, offset+ln)
+        data, data_len = cls[tipe].Parse(data, offset+ln)
         return ((tipe,) + data, ln + data_len)
     
     @classmethod
     def Dump(cls, *values):
         if len(values) == 1 and isinstance(values[0], tuple):
             return cls.Dump(*values[0])
-        return Int.Dump(values[0]) + StructById[values[0]].Dump(*values[1:])
+        return Int.Dump(values[0]) + cls[values[0]].Dump(*values[1:])
+
+    @classmethod
+    def Register(cls, name, hash, *args):
+        class struct_cl(Tuple(*args)):
+            @classmethod
+            def Name(cls):
+                return name
+            
+            @classmethod
+            def Hash(cls):
+                return hash
+            
+            @classmethod
+            def Create(cls, *args):
+                # TODO: вставить проверку типов?
+                return (hash,) + args
+
+        while cls != object:    
+            cls[hash] = struct_cl
+            cls[name] = struct_cl
+            cls = cls.__bases__[0]
+        globals()[name] = struct_cl
 
 class MesuredBox(Box):
     @classmethod
@@ -175,28 +186,34 @@ class MesuredBox(Box):
     @classmethod
     def Dump(cls, *values):
         data = Box.Dump(*values)
-        return Int.Dump(len(data)) + data
 
-Register('resPQ', 0x05162463, Int(128), Int(128), BigInt, VectorBox(Long))
-Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
-Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String)
-Register('server_DH_inner_data', 0xb5890dba, Int(128), Int(128), Int, BigInt, BigInt, Int) 
-Register('dh_gen_ok', 0x3bcbf734, Int(128), Int(128), Int(128))
-Register('dh_gen_retry', 0x46dc1fb9, Int(128), Int(128), Int(128))
-Register('dh_gen_fail', 0xa69dae02, Int(128), Int(128), Int(128))
-Register('req_pq', 0x60469778, Int(128))
-Register('p_q_inner_data', 0x83c95aec, BigInt, BigInt, BigInt, Int(128), Int(128), Int(256))
-Register('req_DH_params', 0xd712e4be, Int(128), Int(128), BigInt, BigInt, Long, String)
-Register('rsa_public_key', 0x7a19cb76, BigInt, BigInt)
-Register('set_client_DH_params', 0xf5045f1f, Int(128), Int(128), String)
-Register('client_DH_inner_data', 0x6643b654, Int(128), Int(128), Long, BigInt)
-Register('ping', 0x7abe77ec, Long)
-Register('pong', 0x347773c5, Long, Long)
-Register('message', 0x5bb8e511, Long, Int, MesuredBox)
-Register('msg_container', 0x73f1f8dc, Vector(message))
-Register('new_session_created', 0x9ec20908, Long, Long, Long)
-Register('bad_msg_notification', 0xa7eff811, Long, Int, Int)
-Register('msgs_ack', 0x62d6b459, VectorBox(Long))
+class Bool(Box, metaclass=BoxType):
+    pass
+
+Box.Register('resPQ', 0x05162463, Int(128), Int(128), BigInt, VectorBox(Long))
+Box.Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
+Box.Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String)
+Box.Register('server_DH_inner_data', 0xb5890dba, Int(128), Int(128), Int, BigInt, BigInt, Int) 
+Box.Register('dh_gen_ok', 0x3bcbf734, Int(128), Int(128), Int(128))
+Box.Register('dh_gen_retry', 0x46dc1fb9, Int(128), Int(128), Int(128))
+Box.Register('dh_gen_fail', 0xa69dae02, Int(128), Int(128), Int(128))
+Box.Register('req_pq', 0x60469778, Int(128))
+Box.Register('p_q_inner_data', 0x83c95aec, BigInt, BigInt, BigInt, Int(128), Int(128), Int(256))
+Box.Register('req_DH_params', 0xd712e4be, Int(128), Int(128), BigInt, BigInt, Long, String)
+Box.Register('rsa_public_key', 0x7a19cb76, BigInt, BigInt)
+Box.Register('set_client_DH_params', 0xf5045f1f, Int(128), Int(128), String)
+Box.Register('client_DH_inner_data', 0x6643b654, Int(128), Int(128), Long, BigInt)
+Box.Register('ping', 0x7abe77ec, Long)
+Box.Register('pong', 0x347773c5, Long, Long)
+Box.Register('message', 0x5bb8e511, Long, Int, MesuredBox)
+Box.Register('msg_container', 0x73f1f8dc, Vector(message))
+Box.Register('new_session_created', 0x9ec20908, Long, Long, Long)
+Box.Register('bad_msg_notification', 0xa7eff811, Long, Int, Int)
+Box.Register('msgs_ack', 0x62d6b459, VectorBox(Long))
+Bool.Register('boolFalse', 0xbc799737)
+Bool.Register('boolTrue', 0x997275b5)
+Box.Register('rpc_result', 0xf35c6d01, Long, Box)
+Box.Register('rpc_error', 0x2144ca19, Int, String)
 
 if __name__ == "__main__":
     Register("test_struct", 0x12345678, Int, Int)
