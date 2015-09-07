@@ -3,7 +3,7 @@ import logging
 import logging.handlers
 import traceback
 import yaml
-from optparse import OptionParser
+from argparse import ArgumentParser
 from time import time as Now
 
 import rsa
@@ -346,12 +346,12 @@ class MessageHandler:
         return True    
 
 def main():
-    parser = OptionParser()
-    parser.add_option("-c", "--config", help="yaml config file name", default="config.yaml")
-    (options, args) = parser.parse_args()
+    parser = ArgumentParser()
+    parser.add_argument("-c", "--config", help="yaml config file name", default="config.yaml")
+    args = parser.parse_args()
 
     try:
-        with open(options.config, 'r') as config_file:
+        with open(args.config, 'r') as config_file:
             config = yaml.load(config_file.read())
     except:
         logging.error('Unable to open "{}" file.'.format(options.config))
