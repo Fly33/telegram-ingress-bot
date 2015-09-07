@@ -2,33 +2,31 @@
 import logging
 import struct
 
-def Int(base_size=32):
-    assert(base_size % 8 == 0)
-    base_size //= 8
+class Type:
+    def __init__(self, name):
+        self.name = name
+
+class Int(Type):
+    size = 4
     
-    class int_cl:
-        size = base_size
-        
-        @classmethod
-        def Parse(cls, data, offset=0):
-            return (int.from_bytes(data[offset:offset+cls.size], 'little'), cls.size)
-        
-        @classmethod
-        def Dump(cls, value):
-            return value.to_bytes(cls.size, 'little')
-        
-        Int = staticmethod(Int)
-        def __new__(cls, size=32):
-            return cls.Int(size)
+    @classmethod
+    def Parse(cls, data, offset=0):
+        return (int.from_bytes(data[offset:offset+cls.size], 'little'), cls.size)
     
-    return int_cl
+    @classmethod
+    def Dump(cls, value):
+        return value.to_bytes(cls.size, 'little')
 
-Int = Int()
+class Long(Int):
+    size = 8
 
-class Long(Int(64)):
-    pass
+class Int128(Int):
+    size = 16
 
-class String:
+class Int256(Int):
+    size = 32
+
+class String(Type):
     @classmethod
     def Parse(cls, data, offset=0):
         ln = int.from_bytes(data[offset:offset+1], 'little')
@@ -54,7 +52,7 @@ class BigInt(String):
     def Dump(cls, value):
         return super().Dump(value.to_bytes((value.bit_length() - 1) // 8 + 1, 'big'))
 
-class Double:
+class Double(Type):
     @classmethod
     def Parse(cls, data, offset=0):
         return (struct.unpack_from('d', data, offset)[0], 8)
@@ -64,7 +62,7 @@ class Double:
         return struct.pack('d', value)
 
 def Tuple(*class_arg):
-    class tuple_cl:
+    class tuple_cl(Type):
         @classmethod
         def Parse(cls, data, offset=0):
             result = []
@@ -87,7 +85,7 @@ def Tuple(*class_arg):
     return tuple_cl
 
 def Vector(tipe):
-    class vector_cl:
+    class vector_cl(Type):
         @classmethod
         def Parse(cls, data, offset=0):
             result = []
@@ -139,7 +137,7 @@ class BoxType(type):
     def __setitem__(self, key, value):
         self.dict[key] = value
 
-class Box(metaclass=BoxType):
+class Box(Type, metaclass=BoxType):
     @classmethod
     def Parse(cls, data, offset=0):
         tipe, ln = Int.Parse(data, offset)
@@ -170,7 +168,7 @@ class Box(metaclass=BoxType):
                 # TODO: вставить проверку типов?
                 return (hash,) + args
 
-        while cls != object:    
+        while cls != Type:    
             cls[hash] = struct_cl
             cls[name] = struct_cl
             cls = cls.__bases__[0]
@@ -190,30 +188,32 @@ class MesuredBox(Box):
 class Bool(Box, metaclass=BoxType):
     pass
 
-Box.Register('resPQ', 0x05162463, Int(128), Int(128), BigInt, VectorBox(Long))
-Box.Register('server_DH_params_fail', 0x79cb045d, Int(128), Int(128), Int(128)) 
-Box.Register('server_DH_params_ok', 0xd0e8075c, Int(128), Int(128), String)
-Box.Register('server_DH_inner_data', 0xb5890dba, Int(128), Int(128), Int, BigInt, BigInt, Int) 
-Box.Register('dh_gen_ok', 0x3bcbf734, Int(128), Int(128), Int(128))
-Box.Register('dh_gen_retry', 0x46dc1fb9, Int(128), Int(128), Int(128))
-Box.Register('dh_gen_fail', 0xa69dae02, Int(128), Int(128), Int(128))
-Box.Register('req_pq', 0x60469778, Int(128))
-Box.Register('p_q_inner_data', 0x83c95aec, BigInt, BigInt, BigInt, Int(128), Int(128), Int(256))
-Box.Register('req_DH_params', 0xd712e4be, Int(128), Int(128), BigInt, BigInt, Long, String)
-Box.Register('rsa_public_key', 0x7a19cb76, BigInt, BigInt)
-Box.Register('set_client_DH_params', 0xf5045f1f, Int(128), Int(128), String)
-Box.Register('client_DH_inner_data', 0x6643b654, Int(128), Int(128), Long, BigInt)
-Box.Register('ping', 0x7abe77ec, Long)
-Box.Register('pong', 0x347773c5, Long, Long)
-Box.Register('message', 0x5bb8e511, Long, Int, MesuredBox)
-Box.Register('msg_container', 0x73f1f8dc, Vector(message))
-Box.Register('new_session_created', 0x9ec20908, Long, Long, Long)
-Box.Register('bad_msg_notification', 0xa7eff811, Long, Int, Int)
-Box.Register('msgs_ack', 0x62d6b459, VectorBox(Long))
+Box.Register('resPQ', 0x05162463, Int128('nonce'), Int128('server_nonce'), BigInt('pq'), VectorBox(Long)('server_public_key_fingerprints'))
+Box.Register('server_DH_params_fail', 0x79cb045d, Int128('nonce'), Int128('server_nonce'), Int128('new_nonce_hash'))
+Box.Register('server_DH_params_ok', 0xd0e8075c, Int128('nonce'), Int128('server_nonce'), String('encrypted_answer'))
+Box.Register('server_DH_inner_data', 0xb5890dba, Int128('nonce'), Int128('server_nonce'), Int('g'), BigInt('dh_prime'), BigInt('g_a'), Int('server_time'))
+Box.Register('dh_gen_ok', 0x3bcbf734, Int128('nonce'), Int128('server_nonce'), Int128('new_nonce_hash1'))
+Box.Register('dh_gen_retry', 0x46dc1fb9, Int128('nonce'), Int128('server_nonce'), Int128('new_nonce_hash2'))
+Box.Register('dh_gen_fail', 0xa69dae02, Int128('nonce'), Int128('server_nonce'), Int128('new_nonce_hash3'))
+Box.Register('req_pq', 0x60469778, Int128('nonce'))
+Box.Register('p_q_inner_data', 0x83c95aec, BigInt('pq'), BigInt('p'), BigInt('q'), Int128('nonce'), Int128('server_nonce'), Int256('new_nonce'))
+Box.Register('req_DH_params', 0xd712e4be, Int128('nonce'), Int128('server_nonce'), BigInt('p'), BigInt('q'), Long('public_key_fingerprint'), String('encrypted_data'))
+Box.Register('rsa_public_key', 0x7a19cb76, BigInt(''), BigInt(''))
+Box.Register('set_client_DH_params', 0xf5045f1f, Int128('nonce'), Int128('server_nonce'), String('encrypted_data'))
+Box.Register('client_DH_inner_data', 0x6643b654, Int128('nonce'), Int128('server_nonce'), Long('retry_id'), BigInt('g_b'))
+Box.Register('ping', 0x7abe77ec, Long('ping_id'))
+Box.Register('pong', 0x347773c5, Long('msg_id'), Long('ping_id'))
+Box.Register('message', 0x5bb8e511, Long('msg_id'), Int('seqno'), MesuredBox('body'))
+Box.Register('msg_container', 0x73f1f8dc, Vector(message)('messages'))
+Box.Register('new_session_created', 0x9ec20908, Long('first_msg_id'), Long('unique_id'), Long('server_salt'))
+Box.Register('bad_msg_notification', 0xa7eff811, Long('bad_msg_id'), Int('bad_msg_seqno'), Int('error_code'))
+Box.Register('msgs_ack', 0x62d6b459, VectorBox(Long)('msg_ids'))
 Bool.Register('boolFalse', 0xbc799737)
 Bool.Register('boolTrue', 0x997275b5)
-Box.Register('rpc_result', 0xf35c6d01, Long, Box)
-Box.Register('rpc_error', 0x2144ca19, Int, String)
+Box.Register('rpc_result', 0xf35c6d01, Long('req_msg_id'), Box('result'))
+Box.Register('rpc_error', 0x2144ca19, Int('error_code'), String('error_message'))
+Box.Register('dcOption', 0x2ec2a43c, Int('id'), String('hostname'), String('ip_address'), Int('port'))
+Box.Register('config', 0x232d5905, Int('date'), Bool('test_mode'), Int('this_dc'), VectorBox(Box)('dc_options'), Int('chat_size_max'))
 
 if __name__ == "__main__":
     Register("test_struct", 0x12345678, Int, Int)

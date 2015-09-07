@@ -220,8 +220,8 @@ class MessageHandler:
         if server_nonce != self.application.server_nonce:
             return False
         
-        server_nonce_str = Int(128).Dump(server_nonce)
-        new_nonce_str = Int(256).Dump(self.application.new_nonce)
+        server_nonce_str = Int128.Dump(server_nonce)
+        new_nonce_str = Int256.Dump(self.application.new_nonce)
         sn_nn = SHA1(server_nonce_str + new_nonce_str)
         nn_sn = SHA1(new_nonce_str + server_nonce_str)
         nn_nn = SHA1(new_nonce_str + new_nonce_str)
