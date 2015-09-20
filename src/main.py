@@ -122,14 +122,14 @@ class Telegram:
         return seq_no
         
     def _Send(self, msg_id, seq_no, data, encrypted=True):
-        logging.debug('Sending message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, Box[data[0]].Name() if data[0] in Box else "<unknown>"))
+        logging.debug("Sending message: msgid={}, seqno={}, data={}".format(msg_id, seq_no, data))
         self.timer.Set(self.ping_timer_id, Now() + 1, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
         return self.session.Send(msg_id, seq_no, data, encrypted)
         
     def Send(self, data, relevant=True, encrypted=True):
         msg_id = self.getMessageId()
         seq_no = self.getSeqNo(relevant)
-        logging.debug('Queueing message: msgid={}, seqno={}, data={}'.format(msg_id, seq_no, Box[data[0]].Name() if data[0] in Box else "<unknown>"))
+        logging.debug("Queueing message: msgid={}, seqno={}, data={}".format(msg_id, seq_no, data))
         # TODO: сделать перезапрос акков?
         if encrypted:
             self.queue.append((msg_id, seq_no, data))
@@ -149,47 +149,29 @@ class Telegram:
         self.queue = []
         return self._Send(msg_id, seq_no, data)
     
-    def Dispatch(self, message_id, seq_no, data):
-        logging.debug("Received message: msgid={}, seqno={}, data={}".format(message_id, seq_no, Box[data[0]].Name() if data[0] in Box else "<unknown>"))
-        message_handler = MessageHandler(self, message_id, seq_no)
-        return message_handler.Dispatch(data)
-
-
-class MessageHandler:
-    def __init__(self, application, message_id, seqno):
-        self.application = application
-        self.message_id = message_id
-        self.seqno = seqno
+    def Dispatch(self, msg_id, seq_no, data):
+        logging.debug("Received message: msgid={}, seqno={}, data={}".format(msg_id, seq_no, data))
+        return getattr(self, 'process_' + data.Name())(msg_id, seq_no, data)
     
-    def Dispatch(self, data):
-        if data[0] not in Box:
-            logging.debug('Unknown response: {}'.format(hex(data[0])))
-            return
-        return getattr(self, 'process_' + Box[data[0]].Name())(*data[1:])
-    
-    def Send(self, data, relevant=True, encrypted=True):
-        return self.application.Send(data, relevant, encrypted)
-        
-    def Ack(self):
-        self.application.acks.append(self.message_id)
+    def Ack(self, msg_id):
+        self.acks.append(msg_id)
         return True
         
-    def process_resPQ(self, nonce, server_nonce, pq, fingerprints):
-        logging.debug("resPQ(nonce={}, server_nonce={}, pq={}, fingerprints={}".format(Hex(nonce), Hex(server_nonce), Hex(pq), Hex(fingerprints)))
-        if nonce != self.application.nonce:
+    def process_resPQ(self, msg_id, seq_no, data):
+        if data.nonce != self.nonce:
             return False
-        self.application.server_nonce = server_nonce
+        self.server_nonce = data.server_nonce
 
-        p, q = Decompose(pq)
+        p, q = Decompose(data.pq)
 
         # перенести?
         try:
-            with open(self.application.config["public_key"], 'rb') as f:
+            with open(self.config["public_key"], 'rb') as f:
                 server_public_key = rsa.PublicKey.load_pkcs1(f.read())
             # проверить отпечаток
-            sha = SHA1(rsa_public_key.Dump(server_public_key.n, server_public_key.e))
+            sha = SHA1(rsa_public_key.Dump(rsa_public_key.Create(server_public_key.n, server_public_key.e)))
             logging.debug('Server public fingerprint: {}'.format(Hex(sha)))
-            for fp_id, fp in enumerate(fingerprints):
+            for fp_id, fp in enumerate(data.server_public_key_fingerprints):
                 if fp == int.from_bytes(sha[-8:], 'little'):
                     fingerprint_id = fp_id
                     break
@@ -197,152 +179,128 @@ class MessageHandler:
                 logging.error('Server public key doesn\'t correspond to the given fingerprints.')
                 return False
         except:
+            traceback.print_exc()
             logging.error('Server public key is missing!')
             return False
-        self.application.new_nonce = random.getrandbits(256)
-        data = Box.Dump(p_q_inner_data.Create(pq, p, q, nonce, server_nonce, self.application.new_nonce))
-        data = SHA1(data) + data
-        data = data + random.getrandbits((255 - len(data))*8).to_bytes(255 - len(data), 'big')
-        encrypted_data = pow(int.from_bytes(data, 'big'), server_public_key.e, server_public_key.n).to_bytes(256, 'big')
-#         encrypted_data = rsa.encrypt(data, server_public_key)
-        self.Send(req_DH_params.Create(nonce, server_nonce, p, q, fingerprints[fingerprint_id], encrypted_data), False, False)
+        self.new_nonce = random.getrandbits(256)
+        inner_data = Box.Dump(p_q_inner_data.Create(data.pq, p, q, data.nonce, data.server_nonce, self.new_nonce))
+        inner_data = SHA1(inner_data) + inner_data
+        inner_data = inner_data + random.getrandbits((255 - len(inner_data))*8).to_bytes(255 - len(inner_data), 'big')
+        encrypted_data = pow(int.from_bytes(inner_data, 'big'), server_public_key.e, server_public_key.n).to_bytes(256, 'big')
+        self.Send(req_DH_params.Create(data.nonce, data.server_nonce, p, q, data.server_public_key_fingerprints[fingerprint_id], encrypted_data), False, False)
         return True
         
-    def process_server_DH_params_fail(self, nonce, server_nonce, new_nonce_hash):
-        logging.debug("server_DH_params_fail(nonce={}, server_nonce={}, new_nonce_hash={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash)))
+    def process_server_DH_params_fail(self, msg_id, seq_no, data):
         return False
     
-    def process_server_DH_params_ok(self, nonce, server_nonce, encrypted_answer):
-        logging.debug("server_DH_params_ok(nonce={}, server_nonce={}, encrypted_answer={})".format(Hex(nonce), Hex(server_nonce), Hex(encrypted_answer)))
-
-        if nonce != self.application.nonce:
+    def process_server_DH_params_ok(self, msg_id, seq_no, data):
+        if data.nonce != self.nonce:
             return False
-        if server_nonce != self.application.server_nonce:
+        if data.server_nonce != self.server_nonce:
             return False
         
-        server_nonce_str = Int128.Dump(server_nonce)
-        new_nonce_str = Int256.Dump(self.application.new_nonce)
+        server_nonce_str = Int128.Dump(data.server_nonce)
+        new_nonce_str = Int256.Dump(self.new_nonce)
         sn_nn = SHA1(server_nonce_str + new_nonce_str)
         nn_sn = SHA1(new_nonce_str + server_nonce_str)
         nn_nn = SHA1(new_nonce_str + new_nonce_str)
         tmp_aes_key = nn_sn + sn_nn[0:12]
         tmp_aes_iv = sn_nn[12:20] + nn_nn + new_nonce_str[0:4]
         
-        self.application.aes_ige = AES_IGE_TLG(tmp_aes_key, tmp_aes_iv)
-        answer = self.application.aes_ige.decrypt(encrypted_answer)
+        self.aes_ige = AES_IGE_TLG(tmp_aes_key, tmp_aes_iv)
+        answer = self.aes_ige.decrypt(data.encrypted_answer)
         
-        return self.Dispatch(answer)
+        return self.Dispatch(msg_id, seq_no, answer)
     
-    def process_server_DH_inner_data(self, nonce, server_nonce, g, p, g_a, server_time):
-        logging.debug("server_DH_inner_data(nonce={}, server_nonce={}, g={}, dh_prime={}, g_a={}, server_time={})".format(Hex(nonce), Hex(server_nonce), Hex(g), Hex(p), Hex(g_a), Hex(server_time)))
-    
-        if nonce != self.application.nonce:
+    def process_server_DH_inner_data(self, msg_id, seq_no, data):
+        if data.nonce != self.nonce:
             return False
-        if server_nonce != self.application.server_nonce:
+        if data.server_nonce != self.server_nonce:
             return False
         
-        self.application.time_offset = server_time - Now()
+        self.time_offset = data.server_time - Now()
         
         b = random.getrandbits(2048)
-        g_b = pow(g, b, p)
-        g_ab = pow(g_a, b, p)
+        g_b = pow(data.g, b, data.dh_prime)
+        g_ab = pow(data.g_a, b, data.dh_prime)
         
-        self.application.session.auth_key = g_ab.to_bytes(256, 'big')
+        self.session.auth_key = g_ab.to_bytes(256, 'big')
         
-        encrypted_data = self.application.aes_ige.encrypt(client_DH_inner_data.Create(nonce, server_nonce, self.application.retry_id, g_b))
-        self.application.retry_id += 1
-        self.Send(set_client_DH_params.Create(nonce, server_nonce, encrypted_data), False, False)
+        encrypted_data = self.aes_ige.encrypt(client_DH_inner_data.Create(data.nonce, data.server_nonce, self.retry_id, g_b))
+        self.retry_id += 1
+        self.Send(set_client_DH_params.Create(data.nonce, data.server_nonce, encrypted_data), False, False)
         return True
     
-    def process_dh_gen_ok(self, nonce, server_nonce, new_nonce_hash1):
-        logging.debug("process_dh_gen_ok(nonce={}, server_nonce={}, new_nonce_hash1={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash1)))
-        if nonce != self.application.nonce:
+    def process_dh_gen_ok(self, msg_id, seq_no, data):
+        if data.nonce != self.nonce:
             return False
-        if server_nonce != self.application.server_nonce:
+        if data.server_nonce != self.server_nonce:
             return False
         # TODO: проверить хэш
-        with open(self.application.config['auth_key'], 'wb') as auth_key_file:
-            auth_key_file.write(self.application.session.auth_key)
-        self.application.session.salt = XOR.new(self.application.new_nonce.to_bytes(32, 'little')[0:8]).encrypt(self.application.server_nonce.to_bytes(16, 'little')[0:8])
-        del self.application.nonce
-        del self.application.server_nonce
-        del self.application.new_nonce
-        del self.application.retry_id
-        del self.application.aes_ige
+        with open(self.config['auth_key'], 'wb') as auth_key_file:
+            auth_key_file.write(self.session.auth_key)
+        self.session.salt = XOR.new(self.new_nonce.to_bytes(32, 'little')[0:8]).encrypt(self.server_nonce.to_bytes(16, 'little')[0:8])
+        del self.nonce
+        del self.server_nonce
+        del self.new_nonce
+        del self.retry_id
+        del self.aes_ige
 
         # TODO: получить код
         return True
     
-    def process_dh_gen_retry(self, nonce, server_nonce, new_nonce_hash2):
-        logging.debug("process_dh_gen_retry(nonce={}, server_nonce={}, new_nonce_hash2={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash2)))
+    def process_dh_gen_retry(self, msg_id, seq_no, data):
         # TODO: попробовать снова
         return False
     
-    def process_dh_gen_fail(self, nonce, server_nonce, new_nonce_hash3):
-        logging.debug("process_dh_gen_fail(nonce={}, server_nonce={}, new_nonce_hash3={})".format(Hex(nonce), Hex(server_nonce), Hex(new_nonce_hash3)))
+    def process_dh_gen_fail(self, msg_id, seq_no, data):
         # TODO: попробовать снова
         return False
     
-    def process_ping(self, ping_id):
-        logging.debug("process_ping(ping_id={})".format(ping_id))
-        self.Send(pong.Create(self.message_id, ping_id), relevant=False)
+    def process_ping(self, msg_id, seq_no, data):
+        self.Send(pong.Create(self.message_id, data.ping_id), relevant=False)
         return True
     
-    def process_pong(self, msg_id, ping_id):
-        logging.debug("process_pong(msg_id={}, ping_id={})".format(msg_id, ping_id))
+    def process_pong(self, msg_id, seq_no, data):
         return True
     
-    def process_msg_container(self, messages):
-        logging.debug("process_msg_container(messages={}):".format(messages))
-        for message_id, seqno, data in messages:
-            if not self.application.Dispatch(message_id, seqno, data):
+    def process_msg_container(self, msg_id, seq_no, data):
+        for message in data.messages:
+            if not self.Dispatch(message.msg_id, message.seqno, message.body):
                 return False
         return True
 
-    def process_new_session_created(self, first_msg_id, unique_id, server_salt):
-        logging.debug("process_new_session_created(first_msg_id={}, unique_id={}, server_salt={})".format(first_msg_id, unique_id, server_salt))
-        self.application.session.salt = Long.Dump(server_salt)
-        self.application.session.message_id = first_msg_id
-        self.Ack()
+    def process_new_session_created(self, msg_id, seq_no, data):
+        self.session.salt = Long.Dump(data.server_salt)
+        self.session.message_id = data.first_msg_id
+        self.Ack(msg_id)
         return True
     
-    def process_bad_msg_notification(self, bad_msg_id, bad_msg_seqno, error_code):
-        logging.debug("process_bad_msg_notification(bad_msg_id={}, bad_msg_seqno={}, error_code={})".format(bad_msg_id, bad_msg_seqno, error_code))
-        if error_code == 16:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_id too low (most likely, client time is wrong; it would be worthwhile to synchronize it using msg_id notifications and re-send the original message with the “correct” msg_id or wrap it in a container with a new msg_id if the original message had waited too long on the client to be transmitted)".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 17:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_id too high (similar to the previous case, the client time has to be synchronized, and the message re-sent with the correct msg_id)".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 18:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): incorrect two lower order msg_id bits (the server expects client message msg_id to be divisible by 4)".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 19:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): container msg_id is the same as msg_id of a previously received message (this must never happen)".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 20:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): message too old, and it cannot be verified whether the server has received a message with this msg_id or not".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 32:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_seqno too low (the server has already received a message with a lower msg_id but with either a higher or an equal and odd seqno)".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 33:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): msg_seqno too high (similarly, there is a message with a higher msg_id but with either a lower or an equal and odd seqno)".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 34:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): an even msg_seqno expected (irrelevant message), but odd received".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 35:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): odd msg_seqno expected (relevant message), but even received".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 48:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): incorrect server salt (in this case, the bad_server_salt response is received with the correct salt, and the message is to be re-sent with it)".format(bad_msg_id, bad_msg_seqno, error_code))
-        elif error_code == 64:
-            logging.error("Bad message (msgid={}, seqno={}, error={}): invalid container.".format(bad_msg_id, bad_msg_seqno, error_code))
+    def process_bad_msg_notification(self, msg_id, seq_no, data):
+        error_str = {
+            16: "msg_id too low (most likely, client time is wrong; it would be worthwhile to synchronize it using msg_id notifications and re-send the original message with the “correct” msg_id or wrap it in a container with a new msg_id if the original message had waited too long on the client to be transmitted)",
+            17: "msg_id too high (similar to the previous case, the client time has to be synchronized, and the message re-sent with the correct msg_id)",
+            18: "incorrect two lower order msg_id bits (the server expects client message msg_id to be divisible by 4)",
+            19: "container msg_id is the same as msg_id of a previously received message (this must never happen)",
+            20: "message too old, and it cannot be verified whether the server has received a message with this msg_id or not",
+            32: "msg_seqno too low (the server has already received a message with a lower msg_id but with either a higher or an equal and odd seqno)",
+            33: "msg_seqno too high (similarly, there is a message with a higher msg_id but with either a lower or an equal and odd seqno)",
+            34: "an even msg_seqno expected (irrelevant message), but odd received",
+            35: "odd msg_seqno expected (relevant message), but even received",
+            48: "incorrect server salt (in this case, the bad_server_salt response is received with the correct salt, and the message is to be re-sent with it)",
+            64: "invalid container.",
+        }
+        logging.error("Bad message (msgid={}, seqno={}, error={}): {}".format(data.bad_msg_id, data.bad_msg_seqno, data.error_code, error_str[data.error_code] if data.error_code in error_str else "<unknown>"))
         return True
     
-    def process_msgs_ack(self, msg_ids):
-        logging.debug("process_msgs_ack(msg_ids={}):".format(msg_ids))
+    def process_msgs_ack(self, msg_id, seq_no, data):
         # TODO: отметить сообщения как полученные
         return True
     
-    def process_rpc_result(self, req_msg_id, result):
-        logging.debug("process_rpc_result(req_msg_id={}, result={})".format(req_msg_id, result))
+    def process_rpc_result(self, msg_id, seq_no, data):
         return True
     
-    def process_rpc_error(self, error_code, error_message):
-        logging.debug("process_rpc_error(error_code={}, error_message={})".format(error_code, error_message))
+    def process_rpc_error(self, msg_id, seq_no, data):
         return True    
 
 def main():

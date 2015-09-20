@@ -144,17 +144,43 @@ class Box(Type, metaclass=BoxType):
         if tipe not in cls:
             raise KeyError("Unknown hash id {:x}".format(tipe))
         data, data_len = cls[tipe].Parse(data, offset+ln)
-        return ((tipe,) + data, ln + data_len)
+        return (data, ln + data_len)
     
     @classmethod
-    def Dump(cls, *values):
-        if len(values) == 1 and isinstance(values[0], tuple):
-            return cls.Dump(*values[0])
-        return Int.Dump(values[0]) + cls[values[0]].Dump(*values[1:])
+    def Dump(cls, value):
+        return Int.Dump(value.Hash()) + cls[value.Hash()].Dump(value)
 
     @classmethod
-    def Register(cls, name, hash, *args):
-        class struct_cl(Tuple(*args)):
+    def Register(cls, name, hash, *types):
+        class struct:
+            def __init__(self, dict):
+                for key, value in dict.items():
+                    setattr(self, key, value)
+            
+            def Name(self):
+                return name
+            
+            def Hash(self):
+                return hash
+            
+            def items(self):
+                return ((tipe.name, getattr(self, tipe.name)) for tipe in types)
+            
+            @classmethod
+            def hex(cls, data):
+                if isinstance(data, int):
+                    return hex(data)[2:]
+                elif isinstance(data, tuple) or isinstance(data, list):
+                    return str(tuple(cls.hex(x) for x in data))
+                elif isinstance(data, bytes):
+                    return hex(int.from_bytes(data, 'big'))[2:]
+                else:
+                    return data
+            
+            def __str__(self):
+                return '{}({})'.format(self.Name(), ', '.join('{}={}'.format(key, self.hex(value)) for key, value in self.items()))
+        
+        class struct_cl(Tuple(*types)):
             @classmethod
             def Name(cls):
                 return name
@@ -164,9 +190,17 @@ class Box(Type, metaclass=BoxType):
                 return hash
             
             @classmethod
-            def Create(cls, *args):
-                # TODO: вставить проверку типов?
-                return (hash,) + args
+            def Create(cls, *values):
+                return struct({tipe.name: value for tipe, value in zip(types, values)})
+            
+            @classmethod
+            def Parse(cls, data, offset=0):
+                data, ln = cls.__bases__[0].Parse(data, offset)
+                return (cls.Create(*data), ln)
+            
+            @classmethod
+            def Dump(cls, value):
+                return cls.__bases__[0].Dump(tuple(getattr(value, tipe.name) for tipe in types))
 
         while cls != Type:    
             cls[hash] = struct_cl
@@ -198,7 +232,7 @@ Box.Register('dh_gen_fail', 0xa69dae02, Int128('nonce'), Int128('server_nonce'),
 Box.Register('req_pq', 0x60469778, Int128('nonce'))
 Box.Register('p_q_inner_data', 0x83c95aec, BigInt('pq'), BigInt('p'), BigInt('q'), Int128('nonce'), Int128('server_nonce'), Int256('new_nonce'))
 Box.Register('req_DH_params', 0xd712e4be, Int128('nonce'), Int128('server_nonce'), BigInt('p'), BigInt('q'), Long('public_key_fingerprint'), String('encrypted_data'))
-Box.Register('rsa_public_key', 0x7a19cb76, BigInt(''), BigInt(''))
+Box.Register('rsa_public_key', 0x7a19cb76, BigInt('n'), BigInt('e'))
 Box.Register('set_client_DH_params', 0xf5045f1f, Int128('nonce'), Int128('server_nonce'), String('encrypted_data'))
 Box.Register('client_DH_inner_data', 0x6643b654, Int128('nonce'), Int128('server_nonce'), Long('retry_id'), BigInt('g_b'))
 Box.Register('ping', 0x7abe77ec, Long('ping_id'))
