@@ -1,7 +1,7 @@
-telegram:
-    address:
-        host: 149.154.167.40
-        port: 443
-    public_key: public.pem
-    auth_key: auth.key
 log: log.txt
+telegram:
+  address:
+    host: 149.154.167.40
+    port: 443
+  auth_key: auth.key
+  public_key: public.pem
