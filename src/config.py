@@ -29,13 +29,12 @@ class Config:
     def __repr__(self):
         return 'Config(data={})'.format(repr(self.data))
     
+    def __getattr__(self, name):
+        return getattr(self.data, name)
+    
     def load(self, path):
-        try:
-            with open(path, 'r') as config_file:
-                data = yaml.load(config_file.read())
-        except:
-            logging.error('Unable to open "{}" file.'.format(options.config))
-            return
+        with open(path, 'r') as config_file:
+            data = yaml.load(config_file.read())
         self.path = path
         self.data = data
     

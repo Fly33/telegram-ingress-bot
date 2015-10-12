@@ -36,3 +36,11 @@ class Timer:
             logging.debug("Ivoking timer {}".format(timer_id))
             self.Reset(timer_id)
             callback(*args, **kwargs)
+
+default = Timer()
+
+New = default.New
+Set = default.Set
+Reset = default.Reset
+GetTimeout = default.GetTimeout
+Process = default.Process

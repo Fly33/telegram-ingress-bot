@@ -74,9 +74,9 @@ def Tuple(*class_arg):
             return (tuple(result), reslen)
         
         @classmethod
-        def Dump(cls, *values):
-            if len(values) == 1 and isinstance(values[0], tuple):
-                return cls.Dump(*values[0])
+        def Dump(cls, values):
+#             if len(values) == 1 and isinstance(values[0], tuple):
+#                 return cls.Dump(*values[0])
             result = b''
             for arg, value in zip(class_arg, values):
                 result += arg.Dump(value)
@@ -179,6 +179,9 @@ class Box(Type, metaclass=BoxType):
             
             def __str__(self):
                 return '{}({})'.format(self.Name(), ', '.join('{}={}'.format(key, self.hex(value)) for key, value in self.items()))
+
+            def __repr__(self):
+                return self.__str__()
         
         class struct_cl(Tuple(*types)):
             @classmethod
@@ -216,8 +219,9 @@ class MesuredBox(Box):
         return (data, ln + data_len)
     
     @classmethod
-    def Dump(cls, *values):
-        data = Box.Dump(*values)
+    def Dump(cls, value):
+        data = Box.Dump(value)
+        return Int.Dump(len(data)) + data
 
 class Bool(Box, metaclass=BoxType):
     pass
@@ -244,10 +248,18 @@ Box.Register('bad_msg_notification', 0xa7eff811, Long('bad_msg_id'), Int('bad_ms
 Box.Register('msgs_ack', 0x62d6b459, VectorBox(Long)('msg_ids'))
 Bool.Register('boolFalse', 0xbc799737)
 Bool.Register('boolTrue', 0x997275b5)
+Box.Register('error', 0xc4b9f9bb, Int('code'), String('text'))
+Box.Register('null', 0x56730bcc)
 Box.Register('rpc_result', 0xf35c6d01, Long('req_msg_id'), Box('result'))
 Box.Register('rpc_error', 0x2144ca19, Int('error_code'), String('error_message'))
 Box.Register('dcOption', 0x2ec2a43c, Int('id'), String('hostname'), String('ip_address'), Int('port'))
+Box.Register('disabledFeature', 0xae636f24, String('feature'), String('description'))
 Box.Register('config', 0x232d5905, Int('date'), Bool('test_mode'), Int('this_dc'), VectorBox(Box)('dc_options'), Int('chat_size_max'))
+Box.Register('config', 0x2e54dd74, Int('date'), Bool('test_mode'), Int('this_dc'), VectorBox(Box)('dc_options'), Int('chat_size_max'), Int('broadcast_size_max'))
+Box.Register('config', 0x7dae33e0, Int('date'), Int('expires'), Bool('test_mode'), Int('this_dc'), VectorBox(Box)('dc_options'), Int('chat_big_size'), Int('chat_size_max'), Int('broadcast_size_max'), VectorBox(Box)('disabled_features'))
+Box.Register('help_getConfig', 0xc4f9186b)
+Box.Register('nearestDc', 0x8e1a1775, String('country'), Int('this_dc'), Int('nearest_dc'))
+Box.Register('help_getNearestDc', 0x1fb33026)
 
 if __name__ == "__main__":
     Register("test_struct", 0x12345678, Int, Int)

@@ -1,7 +1,7 @@
 log: log.txt
 telegram:
-  address:
-    host: 149.154.167.40
+  data_centers:
+  - host: 149.154.167.40
     port: 443
-  auth_key: auth.key
   public_key: public.pem
+  test: 1

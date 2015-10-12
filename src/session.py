@@ -17,6 +17,9 @@ class TcpSession:
         self.sock = socket()
         self.sock.connect((host, port))
     
+    def fileno(self):
+        return self.sock.fileno()
+    
     def Receive(self, timeout):
         if len(self.data) < 4 or len(self.data) < int.from_bytes(self.data[:4], 'little'):
             rlist, _, _ = select((self.sock,), (), (), timeout)
