@@ -13,8 +13,8 @@ class Timer:
         self.timer_id += 1
         return self.timer_id
     
-    def Set(self, timer_id, time, callback, *args, **kwargs):
-        self.treap.Update(timer_id, (time, callback, args, kwargs))
+    def Set(self, timer_id, time, interval, callback, *args, **kwargs):
+        self.treap.Update(timer_id, (time, interval, callback, args, kwargs))
         
     def Reset(self, timer_id):
         self.treap.Remove(timer_id)
@@ -24,7 +24,7 @@ class Timer:
         if timer_id is None:
             return None
         now = Now()
-        time, callback, args, kwargs = value
+        time, interval, callback, args, kwargs = value
         if time > now:
             return time - now
         return 0
@@ -32,9 +32,13 @@ class Timer:
     def Process(self):
         while self.GetTimeout() == 0:
             timer_id, value = self.treap.Top()
-            time, callback, args, kwargs = value
+            time, interval, callback, args, kwargs = value
             logging.debug("Ivoking timer {}".format(timer_id))
-            self.Reset(timer_id)
+            if interval:
+                time += interval
+                self.Update(timer_id, (time, interval, callback, args, kwards))
+            else:
+                self.Reset(timer_id)
             callback(*args, **kwargs)
 
 default = Timer()

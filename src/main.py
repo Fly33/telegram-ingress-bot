@@ -8,6 +8,9 @@ from argparse import ArgumentParser
 from time import time as Now
 from collections import OrderedDict
 from select import select
+import threading
+import platform
+import sys
 
 import rsa
 from Crypto.Cipher import XOR
@@ -19,8 +22,9 @@ from session import CryptoSession, ConnectionError
 from algorithm import *
 from error import *
 import timer
-from pip._vendor.requests.sessions import session
 from config import Config
+
+VERSION = '1.0.0'
 
 class DataSession(CryptoSession):
     def __init__(self):
@@ -68,33 +72,10 @@ def Hex(data):
     else:
         return data
 
-class Telegram:
-    def __init__(self, config):
-        self.config = config
-        self.data_centers = []
-        
-    def Run(self):
-        self.data_centers.append(DataCenter(self, self.config['data_centers'][0]))
-        self.data_centers[0].Connect()
-    
-        while True:
-            try:
-                data_centers, _, _ = select(self.data_centers, (), (), timer.GetTimeout())
-                for data_center in data_centers:
-                    data_center.process()
-                timer.Process()
-                for data_center in self.data_centers:
-                    data_center.Flush()
-            except ConnectionError:
-                # TODO: reconnect
-                break
-            except:
-                logging.error(traceback.format_exc())
-                break # TODO: может что-нить поумнее сделать?
-
 
 class DataCenter:
-    def __init__(self, application, config):
+    def __init__(self, id, application, config): # TODO: выпилить application
+        self.id = id
         self.application = application
         self.ping_timer_id = timer.New()
         self.message_id = 0
@@ -104,12 +85,13 @@ class DataCenter:
         self.acks = []
         self.sent_messages = OrderedDict()
         self.rpc = {}
-#         self.id = config['id'] if 'id' in config else None
         self.session = DataSession()
         self.config = config
-        self.dc_options = None
+        self.ready = False
+        self.on_ready = None
         
-    def Connect(self):
+    def Connect(self, on_ready):
+        self.on_ready = on_ready
         host = self.config['host']
         port = self.config['port']
         self.session.Connect(host, port)
@@ -150,8 +132,8 @@ class DataCenter:
         return seq_no
         
     def _Send(self, msg_id, seq_no, data, encrypted=True):
-        logging.debug("Sending message: dc={}, msgid={}, seqno={}, data={}".format(self.config.get('id', '<unknown>'), Hex(msg_id), seq_no, data))
-        timer.Set(self.ping_timer_id, Now() + 1, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
+        logging.debug("Sending message: dc={}, msgid={}, seqno={}, data={}".format(self.id, Hex(msg_id), seq_no, data))
+        timer.Set(self.ping_timer_id, Now() + 1, 0, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
         return self.session.Send(msg_id, seq_no, data, encrypted)
         
     def Send(self, data, relevant=True, encrypted=True):
@@ -160,7 +142,7 @@ class DataCenter:
         return self._Queue(msg_id, seq_no, data, relevant, encrypted)
 
     def _Queue(self, msg_id, seq_no, data, relevant, encrypted):
-        logging.debug("Queueing message: dc={}, msgid={}, seqno={}, data={}".format(self.config.get('id', '<unknown>'), Hex(msg_id), seq_no, data))
+        logging.debug("Queueing message: dc={}, msgid={}, seqno={}, data={}".format(self.id, Hex(msg_id), seq_no, data))
         if relevant:
             self.sent_messages[msg_id] = data
         if encrypted:
@@ -168,7 +150,7 @@ class DataCenter:
             return True
         return self._Send(msg_id, seq_no, data, encrypted)
     
-    def Call(self, data, callback = None, *args, **kwargs):
+    def Call(self, data, callback, *args, **kwargs):
         msg_id = self.getMessageId()
         seq_no = self.getSeqNo(True)
         self.rpc[msg_id] = (data, callback, args, kwargs)
@@ -190,11 +172,15 @@ class DataCenter:
     
     def Dispatch(self, msg_id, seq_no, data):
         logging.debug("Received message: msgid={}, seqno={}, data={}".format(Hex(msg_id), seq_no, data))
-        return getattr(self, 'process_' + data.Name())(msg_id, seq_no, data)
+        return getattr(self, 'process_' + data.Name(), self.process_unknown)(msg_id, seq_no, data)
     
     def Ack(self, msg_id):
         self.acks.append(msg_id)
         return True
+    
+    def process_unknown(self, msg_id, seq_no, data):
+        logging.error("There is no handle for message \"{}\"".format(data.Name()))
+        return False
         
     def process_resPQ(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
@@ -285,8 +271,8 @@ class DataCenter:
         del self.retry_id
         del self.aes_ige
 
-        # TODO: получить код
-        self.Call(help_getConfig.Create())
+        self.ready = True
+        self.on_ready()
         return True
     
     def process_dh_gen_retry(self, msg_id, seq_no, data):
@@ -353,29 +339,183 @@ class DataCenter:
             return True
         req_data, callback, args, kwargs = self.rpc[data.req_msg_id]
         del self.rpc[data.req_msg_id]
-        if data.result.Name() == 'rpc_error':
-            if data.result.code == 303:
-                match = re.match(r'([A-Z_0-9]+)(?:: (.+))?', data.result.error_message)
-                if match:
-                    pass # TODO
-                else:
-                    logging.error('Unable to parse 303 error: {}'.format(data.result.error_message))
-        if callback is not None:
-            return callback(req_data, data.result, args, kwargs)
-        return getattr(self, 'rpc_' + req_data.Name() + '_result_' + data.result.Name())(req_data, data.result)
+        return callback(req_data, data.result, *args, **kwargs)
 
-    def rpc_help_getConfig_result_config(self, request, result):
-        self.dc_options = result.dc_options
-#         if self.id is None:
-#             self.id = result.this_dc
-        if 'id' not in self.config:
-            self.config['id'] = result.this_dc
-            self.config.save()
-        self.Call(help_getNearestDc.Create())
+
+class ApplicationDataCenter(DataCenter):
+    def __init__(self, id, application, config):
+        self.application = application
+        self.rpc_queue = []
+        self._authorised = True
+        super().__init__(id, application, config)
+
+    def get_authorised(self):
+        return self._authorised
+
+    def set_authorised(self, authorised):
+        self._authorised = authorised
+        if authorised:
+            self.rpc_flush()
+
+    def rpc_flush(self):
+        for request in self.rpc_queue:
+            super().Call(request, self.rpc_callback)
+
+    authorised = property(get_authorised, set_authorised)
+
+    def Call(self, request):
+        # TODO: отложить запросы до возможности их исполнения
+        if not self.ready or not self.authorised and request.Name() not in ('auth_sendCode', 'auth_sendCall', 'auth_checkPhone', 'auth_signUp', 'auth_signIn', 'auth_importAuthorization', 'help_getConfig', 'help_getNearestDc'):
+            self.rpc_queue.append(request)
+            return
+        return super().Call(request, self.rpc_callback)
+
+    def rpc_callback(self, req, res):
+        return self.application.rpc_callback(self, req, res)
+
+    def Connect(self):
+        return super().Connect(self.dc_ready)
+
+    def dc_ready(self):
+        self.rpc_flush()
+        return self.application.dc_ready(self)
+
+
+class InputThread(threading.Thread):
+    def __init__(self, prompt, callback):
+        self.result = None
+        self.prompt = prompt
+        self.callback = callback
+        super().__init__()
+
+    def run(self):
+        self.result = input(self.prompt)
+
+    def start(self):
+        super().start()
+        self.timer_callback(timer.New())
+
+    def timer_callback(self, timer_id):
+        self.join(0)
+        if self.is_alive():
+            timer.Set(timer_id, Now() + 1, 0, self.timer_callback, timer_id)
+            return
+        self.callback(self.result)
+
+
+def Input(prompt, callback):
+    input_thread = InputThread(prompt, callback)
+    input_thread.start()
+
+
+class Telegram:
+    def __init__(self, config):
+        self.config = config
+        self.data_centers = {}
+        self.ready = False
+        self.nearest_dc = None
+
+    def Run(self):
+        dc_id = list(self.config['data_centers'].keys())[0]
+        data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id]);
+        self.data_centers[dc_id] = data_center
+        data_center.Connect()
+
+        while True:
+            try:
+                data_centers, _, _ = select(self.data_centers.values(), (), (), timer.GetTimeout())
+                for data_center in data_centers:
+                    data_center.process()
+                timer.Process()
+                for data_center in self.data_centers.values():
+                    data_center.Flush()
+            except ConnectionError:
+                # TODO: reconnect
+                break
+            except:
+                logging.error(traceback.format_exc())
+                break # TODO: может что-нить поумнее сделать?
+
+    def dc_ready(self, dc):
+        if not self.ready:
+            dc.Call(invokeWithLayer.Create(23, initConnection.Create(self.config['api_id'], platform.platform(), sys.version, VERSION, self.config.get('lang_code', 'en'), help_getConfig.Create())))
+
+    def data_center(self, dc_id):
+        if dc_id not in self.data_centers:
+            if dc_id not in self.config['data_centers']:
+                logging.error('Data center #{} is not found'.format(dc_id))
+                return
+            data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id])
+            self.data_centers[dc_id] = data_center
+            data_center.Connect()
+        return self.data_centers[dc_id]
+
+    def rpc_callback(self, dc, request, result):
+        if result.Name() == 'rpc_error':
+            error_handler = getattr(self, 'rpc_' + request.Name() + '_result_' + str(result.error_code), None) 
+            if error_handler: 
+                return error_handler(dc, request, result)
+            elif result.error_code == 303: # ERROR_SEE_OTHER
+                match = re.match(r'(\w+?(\d+))(?:: (.+))?', result.error_message)
+                if match:
+                    dc_id = int(match.group(2))
+                    return self.data_center(dc_id).Call(request)
+                else:
+                    logging.error('Unable to parse 303 error: {}'.format(result.error_message))
+                    return False
+            elif result.error_code == 401: # UNAUTHORIZED
+                # TODO: проверить, что авторизация ещё не начата
+                dc.authorised = False
+                dc.Call(request) # TODO: перепостить запрос
+                if dc.id != self.nearest_dc:
+                    return self.data_center(self.nearest_dc).Call(auth_exportAuthorization.Create(dc.id))
+                if 'api_id' not in self.config or 'api_hash' not in self.config:
+                    logging.error("Get api_id and api_hash from https://my.telegram.org/apps")
+                    return
+                if 'profile' not in self.config or 'phone_number' not in self.config['profile']:
+                    logging.error('The config does not contain phone number')
+                    return
+                return dc.Call(auth_sendCode.Create(self.config['profile']['phone_number'], 0, int(self.config['api_id']), self.config['api_hash'], self.config.get('lang_code', 'en')))
+            else:
+                logging.error('Unhandled rpc error for "{}": {} {}'.format(request.Name(), result.error_code, result.error_message))
+                return
+        return getattr(self, 'rpc_' + request.Name() + '_result_' + result.Name(), self.rpc_unknown)(dc, request, result)
+
+    def rpc_unknown(self, dc, request, result):
+        logging.error("There is no handler for request \"{}\" with result \"{}\"".format(request.Name(), result.Name()))
+        return False
+
+    def rpc_help_getConfig_result_config(self, dc, request, result):
+        for dc_option in result.dc_options:
+            host = dc_option.hostname if dc_option.hostname else dc_option.ip_address
+            self.config['data_centers'][dc_option.id] = {'host': host, 'port': dc_option.port}
+        self.config.save()
+        dc.Call(help_getNearestDc.Create())
         return True
-    
-    def rpc_help_getNearestDc_result_nearestDc(self, request, result):
-        pass # TODO
+
+    def rpc_help_getNearestDc_result_nearestDc(self, dc, request, result):
+        self.nearest_dc = result.nearest_dc
+        self.ready = True
+        dc.Call(account_updateStatus.Create(False))
+        return True
+
+    def rpc_auth_sendCode_result_auth_sentCode(self, dc, request, result):
+        if result.phone_registered:
+            Input('Enter confirmation code: ', lambda phone_code: dc.Call(auth_signIn.Create(self.config['profile']['phone_number'], result.phone_code_hash, phone_code)))
+        else:
+            Input('Enter confirmation code: ', lambda phone_code: dc.Call(auth_signUp.Create(self.config['profile']['phone_number'], result.phone_code_hash, phone_code, self.config['profile'].get('first_name', 'Unknown'), self.config['profile'].get('last_name', 'Bot'))))
+
+    def rpc_auth_exportAuthorization_result_auth_exportedAuthorization(self, dc, request, result):
+        self.data_centers[request.dc_id].Call(auth_importAuthorization.Create(result.id, result.bytes))
+
+    def rpc_auth_signIn_result_auth_authorization(self, dc, request, result):
+        dc.authorised = True
+
+    def rpc_auth_signUp_result_auth_authorization(self, dc, request, result):
+        dc.authorised = True
+
+    def rpc_auth_importAuthorization_result_auth_authorization(self, dc, request, result):
+        dc.authorised = True
 
 
 def main():

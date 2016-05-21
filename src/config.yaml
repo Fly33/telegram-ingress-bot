@@ -1,7 +1,14 @@
 log: log.txt
 telegram:
+  api_hash: <Get api_hash from https://my.telegram.org/apps>
+  api_id: <Get api_id from https://my.telegram.org/apps>
   data_centers:
-  - host: 149.154.167.40
-    port: 443
+    1:
+      host: 149.154.175.10
+      port: 443
+  lang_code: en
+  profile:
+    first_name: John
+    last_name: Doe
+    phone_number: <Enter you phone humber here>
   public_key: public.pem
-  test: 1
