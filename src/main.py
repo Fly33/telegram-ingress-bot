@@ -18,13 +18,15 @@ from Crypto.Random import random
 
 from crypto import *
 from format import *
-from session import CryptoSession, ConnectionError
+from session import CryptoSession
 from algorithm import *
 from error import *
 import timer
 from config import Config
 
 VERSION = '1.0.0'
+
+TRACE = 5
 
 class DataSession(CryptoSession):
     def __init__(self):
@@ -35,12 +37,12 @@ class DataSession(CryptoSession):
         if message is None:
             return None
         id, seq, data = message
-        logging.debug("Recv data: {}".format(self.Hex(data)))
+        logging.log(TRACE, "Recv data: {}".format(self.Hex(data)))
         return (id, seq, Box.Parse(data)[0])
 
     def Send(self, message_id, seq_no, data, encrypted=True):
         data = Box.Dump(data)
-        logging.debug("Send data: {}".format(self.Hex(data)))
+        logging.log(TRACE, "Send data: {}".format(self.Hex(data)))
         return super().Send(message_id, seq_no, data, encrypted)
 
     @staticmethod
@@ -61,7 +63,7 @@ class AES_IGE_TLG(AES_IGE):
         if data_with_hash[0:20] != SHA1(data_with_hash[20:20+data_len]):
             raise DecryptError("Failed to decrypt message")
         return data
-    
+
 def Hex(data):
     if isinstance(data, int):
         return hex(data)[2:]
@@ -89,13 +91,13 @@ class DataCenter:
         self.config = config
         self.ready = False
         self.on_ready = None
-        
+
     def Connect(self, on_ready):
         self.on_ready = on_ready
         host = self.config['host']
         port = self.config['port']
         self.session.Connect(host, port)
-        
+
         if self.application.config['test'] or 'auth_key' not in self.config:
             logging.info("Generating new auth key.")
             self.retry_id = 0
@@ -105,17 +107,15 @@ class DataCenter:
             self.session.auth_key = self.config['auth_key']
             logging.info("Auth key is loaded.")
             self.Call(help_getConfig.Create())
-    
+
     def fileno(self):
         return self.session.fileno()
-    
+
     def process(self):
         message = self.session.Receive(0)
         if message is not None:
-            if not self.Dispatch(*message):
-                return False
-        return True
-    
+            self.Dispatch(*message)
+
     def getMessageId(self):
         msg_id = int((Now() + self.time_offset)  * (1 << 30)) * 4
         if self.message_id >= msg_id:
@@ -123,19 +123,19 @@ class DataCenter:
         else:
             self.message_id = msg_id
         return self.message_id
-    
+
     def getSeqNo(self, relevant=True):
         seq_no = self.n_relevant * 2
         if relevant:
             seq_no += 1
             self.n_relevant += 1
         return seq_no
-        
+
     def _Send(self, msg_id, seq_no, data, encrypted=True):
         logging.debug("Sending message: dc={}, msgid={}, seqno={}, data={}".format(self.id, Hex(msg_id), seq_no, data))
         timer.Set(self.ping_timer_id, Now() + 1, 0, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
         return self.session.Send(msg_id, seq_no, data, encrypted)
-        
+
     def Send(self, data, relevant=True, encrypted=True):
         msg_id = self.getMessageId()
         seq_no = self.getSeqNo(relevant)
@@ -149,42 +149,40 @@ class DataCenter:
             self.queue.append((msg_id, seq_no, data))
             return True
         return self._Send(msg_id, seq_no, data, encrypted)
-    
+
     def Call(self, data, callback, *args, **kwargs):
         msg_id = self.getMessageId()
         seq_no = self.getSeqNo(True)
         self.rpc[msg_id] = (data, callback, args, kwargs)
         return self._Queue(msg_id, seq_no, data, True, True)
-    
+
     def Flush(self):
         if self.acks:
             self.Send(msgs_ack.Create(self.acks), relevant=False)
             self.acks = []
         # TODO: переслать сообщения, ответ на которые не получен
         if not self.queue:
-            return True
+            return
         if len(self.queue) == 1:
             msg_id, seq_no, data = self.queue[0]
         else:
             msg_id, seq_no, data = self.getMessageId(), self.getSeqNo(False), msg_container.Create(tuple(message.Create(msg_id, seq_no, data) for msg_id, seq_no, data in self.queue))
         self.queue = []
         return self._Send(msg_id, seq_no, data)
-    
+
     def Dispatch(self, msg_id, seq_no, data):
         logging.debug("Received message: msgid={}, seqno={}, data={}".format(Hex(msg_id), seq_no, data))
-        return getattr(self, 'process_' + data.Name(), self.process_unknown)(msg_id, seq_no, data)
-    
+        getattr(self, 'process_' + data.Name(), self.process_unknown)(msg_id, seq_no, data)
+
     def Ack(self, msg_id):
         self.acks.append(msg_id)
-        return True
-    
+
     def process_unknown(self, msg_id, seq_no, data):
         logging.error("There is no handle for message \"{}\"".format(data.Name()))
-        return False
-        
+
     def process_resPQ(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return False
+            return
         self.server_nonce = data.server_nonce
 
         p, q = Decompose(data.pq)
@@ -202,28 +200,27 @@ class DataCenter:
                     break
             else:
                 logging.error('Server public key doesn\'t correspond to the given fingerprints.')
-                return False
+                return
         except:
             traceback.print_exc()
             logging.error('Server public key is missing!')
-            return False
+            return
         self.new_nonce = random.getrandbits(256)
         inner_data = Box.Dump(p_q_inner_data.Create(data.pq, p, q, data.nonce, data.server_nonce, self.new_nonce))
         inner_data = SHA1(inner_data) + inner_data
         inner_data = inner_data + random.getrandbits((255 - len(inner_data))*8).to_bytes(255 - len(inner_data), 'big')
         encrypted_data = pow(int.from_bytes(inner_data, 'big'), server_public_key.e, server_public_key.n).to_bytes(256, 'big')
         self.Send(req_DH_params.Create(data.nonce, data.server_nonce, p, q, data.server_public_key_fingerprints[fingerprint_id], encrypted_data), False, False)
-        return True
-        
+
     def process_server_DH_params_fail(self, msg_id, seq_no, data):
-        return False
-    
+        pass
+
     def process_server_DH_params_ok(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return False
+            return
         if data.server_nonce != self.server_nonce:
-            return False
-        
+            return
+
         server_nonce_str = Int128.Dump(data.server_nonce)
         new_nonce_str = Int256.Dump(self.new_nonce)
         sn_nn = SHA1(server_nonce_str + new_nonce_str)
@@ -231,36 +228,35 @@ class DataCenter:
         nn_nn = SHA1(new_nonce_str + new_nonce_str)
         tmp_aes_key = nn_sn + sn_nn[0:12]
         tmp_aes_iv = sn_nn[12:20] + nn_nn + new_nonce_str[0:4]
-        
+
         self.aes_ige = AES_IGE_TLG(tmp_aes_key, tmp_aes_iv)
         answer = self.aes_ige.decrypt(data.encrypted_answer)
-        
-        return self.Dispatch(msg_id, seq_no, answer)
-    
+
+        self.Dispatch(msg_id, seq_no, answer)
+
     def process_server_DH_inner_data(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return False
+            return
         if data.server_nonce != self.server_nonce:
-            return False
-        
+            return
+
         self.time_offset = data.server_time - Now()
-        
+
         b = random.getrandbits(2048)
         g_b = pow(data.g, b, data.dh_prime)
         g_ab = pow(data.g_a, b, data.dh_prime)
-        
+
         self.session.auth_key = g_ab.to_bytes(256, 'big')
-        
+
         encrypted_data = self.aes_ige.encrypt(client_DH_inner_data.Create(data.nonce, data.server_nonce, self.retry_id, g_b))
         self.retry_id += 1
         self.Send(set_client_DH_params.Create(data.nonce, data.server_nonce, encrypted_data), False, False)
-        return True
-    
+
     def process_dh_gen_ok(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return False
+            return
         if data.server_nonce != self.server_nonce:
-            return False
+            return
         # TODO: проверить хэш
         self.config['auth_key'] = self.session.auth_key
         self.config.save()
@@ -273,35 +269,30 @@ class DataCenter:
 
         self.ready = True
         self.on_ready()
-        return True
-    
+
     def process_dh_gen_retry(self, msg_id, seq_no, data):
         # TODO: попробовать снова
-        return False
-    
+        pass
+
     def process_dh_gen_fail(self, msg_id, seq_no, data):
         # TODO: попробовать снова
-        return False
-    
+        pass
+
     def process_ping(self, msg_id, seq_no, data):
         self.Send(pong.Create(self.message_id, data.ping_id), relevant=False)
-        return True
-    
+
     def process_pong(self, msg_id, seq_no, data):
-        return True
-    
+        pass
+
     def process_msg_container(self, msg_id, seq_no, data):
         for message in data.messages:
-            if not self.Dispatch(message.msg_id, message.seqno, message.body):
-                return False
-        return True
+            self.Dispatch(message.msg_id, message.seqno, message.body)
 
     def process_new_session_created(self, msg_id, seq_no, data):
         self.session.salt = Long.Dump(data.server_salt)
         self.session.message_id = data.first_msg_id
         self.Ack(msg_id)
-        return True
-    
+
     def process_bad_msg_notification(self, msg_id, seq_no, data):
         error_str = {
             16: "msg_id too low (most likely, client time is wrong; it would be worthwhile to synchronize it using msg_id notifications and re-send the original message with the “correct” msg_id or wrap it in a container with a new msg_id if the original message had waited too long on the client to be transmitted)",
@@ -317,8 +308,7 @@ class DataCenter:
             64: "invalid container.",
         }
         logging.error("Bad message (msgid={}, seqno={}, error={}): {}".format(data.bad_msg_id, data.bad_msg_seqno, data.error_code, error_str[data.error_code] if data.error_code in error_str else "<unknown>"))
-        return True
-    
+
     def process_msgs_ack(self, msg_id, seq_no, data):
         # TODO: отметить сообщения как полученные
         for msg_id in data.msg_ids:
@@ -326,8 +316,7 @@ class DataCenter:
                 del self.sent_messages[msg_id]
             else:
                 logging.error("Unknown ack msg_id: {}".format(Hex(msg_id)))
-        return True
-    
+
     def process_rpc_result(self, msg_id, seq_no, data):
         self.Ack(msg_id)
         if data.req_msg_id in self.sent_messages:
@@ -462,7 +451,7 @@ class Telegram:
                     return self.data_center(dc_id).Call(request)
                 else:
                     logging.error('Unable to parse 303 error: {}'.format(result.error_message))
-                    return False
+                    return
             elif result.error_code == 401: # UNAUTHORIZED
                 # TODO: проверить, что авторизация ещё не начата
                 dc.authorised = False
@@ -483,7 +472,6 @@ class Telegram:
 
     def rpc_unknown(self, dc, request, result):
         logging.error("There is no handler for request \"{}\" with result \"{}\"".format(request.Name(), result.Name()))
-        return False
 
     def rpc_help_getConfig_result_config(self, dc, request, result):
         for dc_option in result.dc_options:
@@ -491,13 +479,11 @@ class Telegram:
             self.config['data_centers'][dc_option.id] = {'host': host, 'port': dc_option.port}
         self.config.save()
         dc.Call(help_getNearestDc.Create())
-        return True
 
     def rpc_help_getNearestDc_result_nearestDc(self, dc, request, result):
         self.nearest_dc = result.nearest_dc
         self.ready = True
         dc.Call(account_updateStatus.Create(False))
-        return True
 
     def rpc_auth_sendCode_result_auth_sentCode(self, dc, request, result):
         if result.phone_registered:
@@ -530,6 +516,7 @@ def main():
         logging.error('Unable to open "{}" file.'.format(options.config))
         return
 
+    logging.addLevelName(TRACE, "TRACE")
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
