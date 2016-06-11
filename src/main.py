@@ -76,9 +76,8 @@ def Hex(data):
 
 
 class DataCenter:
-    def __init__(self, id, application, config): # TODO: выпилить application
+    def __init__(self, id, config, public_key, on_ready): # TODO: выпилить application
         self.id = id
-        self.application = application
         self.ping_timer_id = timer.New()
         self.message_id = 0
         self.n_relevant = 0
@@ -89,16 +88,16 @@ class DataCenter:
         self.rpc = {}
         self.session = DataSession()
         self.config = config
+        self.public_key = public_key
         self.ready = False
-        self.on_ready = None
-
-    def Connect(self, on_ready):
         self.on_ready = on_ready
+
+    def Connect(self, test=False):
         host = self.config['host']
         port = self.config['port']
         self.session.Connect(host, port)
 
-        if self.application.config['test'] or 'auth_key' not in self.config:
+        if test or 'auth_key' not in self.config:
             logging.info("Generating new auth key.")
             self.retry_id = 0
             self.nonce = random.getrandbits(128)
@@ -106,7 +105,8 @@ class DataCenter:
         else:
             self.session.auth_key = self.config['auth_key']
             logging.info("Auth key is loaded.")
-            self.Call(help_getConfig.Create())
+            self.ready = True
+            self.on_ready()
 
     def fileno(self):
         return self.session.fileno()
@@ -147,7 +147,7 @@ class DataCenter:
             self.sent_messages[msg_id] = data
         if encrypted:
             self.queue.append((msg_id, seq_no, data))
-            return True
+            return
         return self._Send(msg_id, seq_no, data, encrypted)
 
     def Call(self, data, callback, *args, **kwargs):
@@ -187,23 +187,16 @@ class DataCenter:
 
         p, q = Decompose(data.pq)
 
-        # перенести?
-        try:
-            with open(self.application.config["public_key"], 'rb') as f:
-                server_public_key = rsa.PublicKey.load_pkcs1(f.read())
-            # проверить отпечаток
-            sha = SHA1(rsa_public_key.Dump(rsa_public_key.Create(server_public_key.n, server_public_key.e)))
-            logging.debug('Server public fingerprint: {}'.format(Hex(sha)))
-            for fp_id, fp in enumerate(data.server_public_key_fingerprints):
-                if fp == int.from_bytes(sha[-8:], 'little'):
-                    fingerprint_id = fp_id
-                    break
-            else:
-                logging.error('Server public key doesn\'t correspond to the given fingerprints.')
-                return
-        except:
-            traceback.print_exc()
-            logging.error('Server public key is missing!')
+        server_public_key = rsa.PublicKey.load_pkcs1(self.public_key)
+        # проверить отпечаток
+        sha = SHA1(rsa_public_key.Dump(rsa_public_key.Create(server_public_key.n, server_public_key.e)))
+        logging.debug('Server public fingerprint: {}'.format(Hex(sha)))
+        for fp_id, fp in enumerate(data.server_public_key_fingerprints):
+            if fp == int.from_bytes(sha[-8:], 'little'):
+                fingerprint_id = fp_id
+                break
+        else:
+            logging.error('Server public key doesn\'t correspond to the given fingerprints.')
             return
         self.new_nonce = random.getrandbits(256)
         inner_data = Box.Dump(p_q_inner_data.Create(data.pq, p, q, data.nonce, data.server_nonce, self.new_nonce))
@@ -266,6 +259,7 @@ class DataCenter:
         del self.new_nonce
         del self.retry_id
         del self.aes_ige
+        logging.info("Auth key was successfully generated.")
 
         self.ready = True
         self.on_ready()
@@ -332,11 +326,11 @@ class DataCenter:
 
 
 class ApplicationDataCenter(DataCenter):
-    def __init__(self, id, application, config):
+    def __init__(self, id, application, config, public_key):
         self.application = application
         self.rpc_queue = []
         self._authorised = True
-        super().__init__(id, application, config)
+        super().__init__(id, config, public_key, self.dc_ready)
 
     def get_authorised(self):
         return self._authorised
@@ -357,13 +351,17 @@ class ApplicationDataCenter(DataCenter):
         if not self.ready or not self.authorised and request.Name() not in ('auth_sendCode', 'auth_sendCall', 'auth_checkPhone', 'auth_signUp', 'auth_signIn', 'auth_importAuthorization', 'help_getConfig', 'help_getNearestDc'):
             self.rpc_queue.append(request)
             return
+        if self.first:
+            request = invokeWithLayer.Create(23, initConnection.Create(self.application.config['api_id'], platform.platform(), sys.version, VERSION, self.application.config.get('lang_code', 'en'), request))
+            self.first = False
         return super().Call(request, self.rpc_callback)
 
     def rpc_callback(self, req, res):
         return self.application.rpc_callback(self, req, res)
 
-    def Connect(self):
-        return super().Connect(self.dc_ready)
+    def Connect(self, test=False):
+        self.first = True
+        return super().Connect(test=test)
 
     def dc_ready(self):
         self.rpc_flush()
@@ -405,10 +403,18 @@ class Telegram:
         self.nearest_dc = None
 
     def Run(self):
+        # перенести?
+        try:
+            with open(self.config["public_key"], 'rb') as f:
+                self.public_key = f.read()
+        except:
+            logging.exception('Server public key is missing!')
+            return
+        
         dc_id = list(self.config['data_centers'].keys())[0]
-        data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id]);
+        data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key);
         self.data_centers[dc_id] = data_center
-        data_center.Connect()
+        data_center.Connect(self.config['test'])
 
         while True:
             try:
@@ -422,21 +428,21 @@ class Telegram:
                 # TODO: reconnect
                 break
             except:
-                logging.error(traceback.format_exc())
+                logging.exception("The game is up!")
                 break # TODO: может что-нить поумнее сделать?
 
     def dc_ready(self, dc):
         if not self.ready:
-            dc.Call(invokeWithLayer.Create(23, initConnection.Create(self.config['api_id'], platform.platform(), sys.version, VERSION, self.config.get('lang_code', 'en'), help_getConfig.Create())))
+            dc.Call(help_getConfig.Create())
 
     def data_center(self, dc_id):
         if dc_id not in self.data_centers:
             if dc_id not in self.config['data_centers']:
                 logging.error('Data center #{} is not found'.format(dc_id))
                 return
-            data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id])
+            data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key)
             self.data_centers[dc_id] = data_center
-            data_center.Connect()
+            data_center.Connect(self.config['test'])
         return self.data_centers[dc_id]
 
     def rpc_callback(self, dc, request, result):
@@ -475,8 +481,9 @@ class Telegram:
 
     def rpc_help_getConfig_result_config(self, dc, request, result):
         for dc_option in result.dc_options:
-            host = dc_option.hostname if dc_option.hostname else dc_option.ip_address
-            self.config['data_centers'][dc_option.id] = {'host': host, 'port': dc_option.port}
+            if dc_option.id not in self.config['data_centers']: 
+                host = dc_option.hostname if dc_option.hostname else dc_option.ip_address
+                self.config['data_centers'][dc_option.id] = {'host': host, 'port': dc_option.port}
         self.config.save()
         dc.Call(help_getNearestDc.Create())
 
@@ -516,17 +523,18 @@ def main():
         logging.error('Unable to open "{}" file.'.format(options.config))
         return
 
+    level = TRACE
     logging.addLevelName(TRACE, "TRACE")
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(level)
     formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
     handler = logging.handlers.RotatingFileHandler(config["log"], maxBytes=16000000, backupCount=2)
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(level)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     handler = logging.StreamHandler()
     handler.setFormatter(formatter)
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(level)
     logger.addHandler(handler)
 
     telegram = Telegram(config['telegram'])
