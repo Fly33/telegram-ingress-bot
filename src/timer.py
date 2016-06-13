@@ -4,49 +4,69 @@ from time import time as Now
 from algorithm import Treap
 import logging
 import datetime
+from test.test_zipfile64 import OtherTests
 
 class Timer:
+    def __init__(self, id, name, clock):
+        self.id = id
+        self.name = name
+        self.clock = clock
+
+    def Set(self, time, interval, callback, *args, **kwargs):
+        logging.log(5, "Timer \"{}\" is reset to \"{}\" (interval: {} seconds)".format(self.name, datetime.datetime.fromtimestamp(time), interval or 0))
+        self.time = time
+        self.interval = interval
+        self.callback = callback
+        self.args = args
+        self.kwargs = kwargs
+        self.clock.treap.Update(self, time) 
+
+    def Reset(self):
+        logging.log(5, "Timer \"{}\" is cleared.".format(self.name))
+        self.clock.treap.Remove(self)
+
+    def __lt__(self, other):
+        return self.id < other.id
+
+    def __le__(self, other):
+        return self.id <= other.id
+
+    def _Process(self):
+        logging.debug("Ivoking timer \"{}\"".format(self.name))
+        if self.interval:
+            self.time += self.interval
+            self.clock.treap.Update(self, self.time)
+        else:
+            self.clock.treap.Remove(self)
+        self.callback(*self.args, **self.kwargs)
+
+
+class Clock:
     def __init__(self):
         self.treap = Treap()
         self.timer_id = 0
     
-    def New(self):
+    def New(self, name):
         self.timer_id += 1
-        return self.timer_id
-    
-    def Set(self, timer_id, time, interval, callback, *args, **kwargs):
-        self.treap.Update(timer_id, (time, interval, callback, args, kwargs))
-        logging.log(5, "timer #{} is reset to \"{}\" (interval: {} seconds)".format(timer_id, datetime.datetime.fromtimestamp(time), interval or 0))
-        
-    def Reset(self, timer_id):
-        self.treap.Remove(timer_id)
+        return Timer(self.timer_id, name, self)
     
     def GetTimeout(self):
-        timer_id, value = self.treap.Top()
-        if timer_id is None:
+        timer, time = self.treap.Top()
+        if timer is None:
             return None
         now = Now()
-        time, interval, callback, args, kwargs = value
         if time > now:
             return time - now
         return 0
     
     def Process(self):
         while self.GetTimeout() == 0:
-            timer_id, value = self.treap.Top()
-            time, interval, callback, args, kwargs = value
-            logging.debug("Ivoking timer {}".format(timer_id))
-            if interval:
-                time += interval
-                self.Update(timer_id, (time, interval, callback, args, kwards))
-            else:
-                self.Reset(timer_id)
-            callback(*args, **kwargs)
+            timer, time = self.treap.Top()
+            timer._Process()
 
-default = Timer()
+
+default = Clock()
 
 New = default.New
-Set = default.Set
-Reset = default.Reset
 GetTimeout = default.GetTimeout
 Process = default.Process

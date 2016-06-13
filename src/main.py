@@ -79,8 +79,8 @@ def Hex(data):
 class DataCenter:
     def __init__(self, id, config, public_key, on_ready): # TODO: выпилить application
         self.id = id
-        self.ping_timer_id = timer.New()
-        self.salt_timer_id = timer.New()
+        self.ping_timer = timer.New("DC{}:ping".format(id))
+        self.salt_timer = timer.New("DC{}:salt".format(id))
         self.message_id = 0
         self.n_relevant = 0
         self.time_offset = 0
@@ -134,7 +134,7 @@ class DataCenter:
 
     def _Send(self, msg_id, seq_no, data, encrypted=True):
         logging.debug("Sending message: dc={}, msgid={}, seqno={}, data={}".format(self.id, msg_id, seq_no, data))
-        timer.Set(self.ping_timer_id, Now() + 1, 0, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
+        self.ping_timer.Set(Now() + 1, 0, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
         return self.session.Send(msg_id, seq_no, data, encrypted)
 
     def Send(self, data, relevant=True, encrypted=True):
@@ -276,7 +276,7 @@ class DataCenter:
         for future_salt in data.salts:
             logging.info("Salt: {}; Valid: {} - {}".format(future_salt.salt, datetime.datetime.fromtimestamp(future_salt.valid_since), datetime.datetime.fromtimestamp(future_salt.valid_until)))
         self.session.salt = Long.Dump(data.salts[0].salt)
-        timer.Set(self.salt_timer_id, future_salt.valid_until, 0, lambda: self.Send(get_future_salts.Create(1), relevant=False))
+        self.salt_timer.Set(future_salt.valid_until, 0, lambda: self.Send(get_future_salts.Create(1), relevant=False))
         if not self.ready:
             self.ready = True
             self.on_ready()
@@ -396,12 +396,13 @@ class InputThread(threading.Thread):
 
     def start(self):
         super().start()
-        self.timer_callback(timer.New())
+        self.timer = timer.New("input")
+        self.timer_callback()
 
-    def timer_callback(self, timer_id):
+    def timer_callback(self):
         self.join(0)
         if self.is_alive():
-            timer.Set(timer_id, Now() + 1, 0, self.timer_callback, timer_id)
+            self.timer.Set(Now() + 1, 0, self.timer_callback)
             return
         self.callback(self.result)
 
