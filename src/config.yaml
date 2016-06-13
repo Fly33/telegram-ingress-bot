@@ -1,14 +1,33 @@
 log: log.txt
 telegram:
-  api_hash: <Get api_hash from https://my.telegram.org/apps>
-  api_id: <Get api_id from https://my.telegram.org/apps>
+  api_hash: 6f2a8f62e3c62129930e02ab7a51bf5e
+  api_id: 10188
   data_centers:
     1:
+      auth_key: !!binary |
+        Q2sf60v88osSfij3D054XTR2d/r52BLBcU/Ftym7SNmc3X6h6t3QSAXw//tQvnqU5RhS8H35TJqH
+        Y8EmXSHI2tMf/asULydSufcJtBZ7tyowveU5axUKk3JuxzsryD0hfyeDk+xhDBfhcG6FcwU1Rysj
+        50wyJQh7PYTiDp98hFYycMEMwEy8siyYhbK277a6sq3l9mxrEgnEIVmUkSRJvd3iZh0yBZDxPdvj
+        Ovh1h5uaO825+KW7CNJFsmox1+os2mE2f0QXQDs3T9JB3IsKeekWZ52MFNvepF4bZ9RvX26Y2XJA
+        lp8Nh+Nd620zg3eie6x1zAoqKaLD8L+z9BhMFA==
       host: 149.154.175.10
       port: 443
-  lang_code: en
+    2:
+      auth_key: !!binary |
+        dpWpvCTv/WIMzVq7suqLcCoVlrmHub9cCAez1H4tLF3Xn+ST4S2OoJ/Efh0Hhd0jVYzq4MRRhhZ2
+        jg8scTtAbBig7xUsTgeqTRB8+jikbRKDr9ApQAlJowp0CZq2qu/7kpgiGytdiu5XsXBOg4uluTLT
+        JEmz3Ov5qZV2RmOt9dzAfmc4i7MX0yWRAlqKoOp+Wnb7UNljjIFL82C0tOAN4pe+ySNuQuunrhB9
+        CV/aP26A0J7bYAMo1gJD96YjTLkmiqr+dmlXzOfCDgbIP2B5a5cgCoJHZ8HUSvdp4UNQUskRLHbc
+        3KWUIyJ5nJB1qnx6nSfCpVpnPilw4xXmrhX+ww==
+      host: 149.154.167.40
+      port: 443
+    3:
+      host: 149.154.175.117
+      port: 80
+  lang_code: ru
   profile:
-    first_name: John
-    last_name: Doe
-    phone_number: <Enter you phone humber here>
+    first_name: Ingress
+    last_name: Bot
+    phone_number: '9996628574'
   public_key: public.pem
+  test: 0

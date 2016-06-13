@@ -11,6 +11,7 @@ from select import select
 import threading
 import platform
 import sys
+import datetime
 
 import rsa
 from Crypto.Cipher import XOR
@@ -79,6 +80,7 @@ class DataCenter:
     def __init__(self, id, config, public_key, on_ready): # TODO: выпилить application
         self.id = id
         self.ping_timer_id = timer.New()
+        self.salt_timer_id = timer.New()
         self.message_id = 0
         self.n_relevant = 0
         self.time_offset = 0
@@ -105,8 +107,7 @@ class DataCenter:
         else:
             self.session.auth_key = self.config['auth_key']
             logging.info("Auth key is loaded.")
-            self.ready = True
-            self.on_ready()
+            self.Send(get_future_salts.Create(1), relevant=False)
 
     def fileno(self):
         return self.session.fileno()
@@ -132,7 +133,7 @@ class DataCenter:
         return seq_no
 
     def _Send(self, msg_id, seq_no, data, encrypted=True):
-        logging.debug("Sending message: dc={}, msgid={}, seqno={}, data={}".format(self.id, Hex(msg_id), seq_no, data))
+        logging.debug("Sending message: dc={}, msgid={}, seqno={}, data={}".format(self.id, msg_id, seq_no, data))
         timer.Set(self.ping_timer_id, Now() + 1, 0, self.Send, ping.Create(random.getrandbits(64)), relevant=False)
         return self.session.Send(msg_id, seq_no, data, encrypted)
 
@@ -142,7 +143,7 @@ class DataCenter:
         return self._Queue(msg_id, seq_no, data, relevant, encrypted)
 
     def _Queue(self, msg_id, seq_no, data, relevant, encrypted):
-        logging.debug("Queueing message: dc={}, msgid={}, seqno={}, data={}".format(self.id, Hex(msg_id), seq_no, data))
+        logging.debug("Queueing message: dc={}, msgid={}, seqno={}, data={}".format(self.id, msg_id, seq_no, data))
         if relevant:
             self.sent_messages[msg_id] = data
         if encrypted:
@@ -171,7 +172,7 @@ class DataCenter:
         return self._Send(msg_id, seq_no, data)
 
     def Dispatch(self, msg_id, seq_no, data):
-        logging.debug("Received message: msgid={}, seqno={}, data={}".format(Hex(msg_id), seq_no, data))
+        logging.debug("Received message: dc={}, msgid={}, seqno={}, data={}".format(self.id, msg_id, seq_no, data))
         getattr(self, 'process_' + data.Name(), self.process_unknown)(msg_id, seq_no, data)
 
     def Ack(self, msg_id):
@@ -182,7 +183,7 @@ class DataCenter:
 
     def process_resPQ(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return
+            raise SecurityError('data.nonce != self.nonce')
         self.server_nonce = data.server_nonce
 
         p, q = Decompose(data.pq)
@@ -196,8 +197,7 @@ class DataCenter:
                 fingerprint_id = fp_id
                 break
         else:
-            logging.error('Server public key doesn\'t correspond to the given fingerprints.')
-            return
+            raise SecurityError('Server public key doesn\'t correspond to the given fingerprints.')
         self.new_nonce = random.getrandbits(256)
         inner_data = Box.Dump(p_q_inner_data.Create(data.pq, p, q, data.nonce, data.server_nonce, self.new_nonce))
         inner_data = SHA1(inner_data) + inner_data
@@ -210,9 +210,9 @@ class DataCenter:
 
     def process_server_DH_params_ok(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return
+            raise SecurityError('data.nonce != self.nonce')
         if data.server_nonce != self.server_nonce:
-            return
+            raise SecurityError('data.server_nonce != self.server_nonce')
 
         server_nonce_str = Int128.Dump(data.server_nonce)
         new_nonce_str = Int256.Dump(self.new_nonce)
@@ -229,9 +229,9 @@ class DataCenter:
 
     def process_server_DH_inner_data(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return
+            raise SecurityError('data.nonce != self.nonce')
         if data.server_nonce != self.server_nonce:
-            return
+            raise SecurityError('data.server_nonce != self.server_nonce')
 
         self.time_offset = data.server_time - Now()
 
@@ -247,9 +247,9 @@ class DataCenter:
 
     def process_dh_gen_ok(self, msg_id, seq_no, data):
         if data.nonce != self.nonce:
-            return
+            raise SecurityError('data.nonce != self.nonce')
         if data.server_nonce != self.server_nonce:
-            return
+            raise SecurityError('data.server_nonce != self.server_nonce')
         # TODO: проверить хэш
         self.config['auth_key'] = self.session.auth_key
         self.config.save()
@@ -261,8 +261,7 @@ class DataCenter:
         del self.aes_ige
         logging.info("Auth key was successfully generated.")
 
-        self.ready = True
-        self.on_ready()
+        self.Send(get_future_salts.Create(1), relevant=False)
 
     def process_dh_gen_retry(self, msg_id, seq_no, data):
         # TODO: попробовать снова
@@ -271,6 +270,16 @@ class DataCenter:
     def process_dh_gen_fail(self, msg_id, seq_no, data):
         # TODO: попробовать снова
         pass
+
+    def process_future_salts(self, msg_id, seq_no, data):
+        self.time_offset = data.now - Now()
+        for future_salt in data.salts:
+            logging.info("Salt: {}; Valid: {} - {}".format(future_salt.salt, datetime.datetime.fromtimestamp(future_salt.valid_since), datetime.datetime.fromtimestamp(future_salt.valid_until)))
+        self.session.salt = Long.Dump(data.salts[0].salt)
+        timer.Set(self.salt_timer_id, future_salt.valid_until, 0, lambda: self.Send(get_future_salts.Create(1), relevant=False))
+        if not self.ready:
+            self.ready = True
+            self.on_ready()
 
     def process_ping(self, msg_id, seq_no, data):
         self.Send(pong.Create(self.message_id, data.ping_id), relevant=False)
@@ -303,23 +312,30 @@ class DataCenter:
         }
         logging.error("Bad message (msgid={}, seqno={}, error={}): {}".format(data.bad_msg_id, data.bad_msg_seqno, data.error_code, error_str[data.error_code] if data.error_code in error_str else "<unknown>"))
 
+    def process_bad_server_salt(self, msg_id, seq_no, data):
+        #bad_msg_id:long bad_msg_seqno:int error_code:int new_server_salt:long
+        self.session.salt = Long.Dump(data.new_server_salt)
+        self.Send(get_future_salts.Create(1), relevant=False)
+        if data.bad_msg_id in self.sent_messages:
+            self.Send(msg_copy.Create(message.Create(data.bad_msg_id, data.bad_msg_seqno, self.sent_messages[data.bad_msg_id])))
+
     def process_msgs_ack(self, msg_id, seq_no, data):
         # TODO: отметить сообщения как полученные
         for msg_id in data.msg_ids:
             if msg_id in self.sent_messages:
                 del self.sent_messages[msg_id]
             else:
-                logging.error("Unknown ack msg_id: {}".format(Hex(msg_id)))
+                logging.error("Unknown ack msg_id: {}".format(msg_id))
 
     def process_rpc_result(self, msg_id, seq_no, data):
         self.Ack(msg_id)
         if data.req_msg_id in self.sent_messages:
             del self.sent_messages[data.req_msg_id]
         else:
-            logging.error("Unknown ack msg_id: {}".format(Hex(data.req_msg_id)))
+            logging.error("Unknown ack msg_id: {}".format(data.req_msg_id))
         if data.req_msg_id not in self.rpc:
-            logging.error("Unknown rpc msg_id: {}".format(Hex(data.req_msg_id)))
-            return True
+            logging.error("Unknown rpc msg_id: {}".format(data.req_msg_id))
+            return
         req_data, callback, args, kwargs = self.rpc[data.req_msg_id]
         del self.rpc[data.req_msg_id]
         return callback(req_data, data.result, *args, **kwargs)
@@ -418,12 +434,12 @@ class Telegram:
 
         while True:
             try:
+                for data_center in self.data_centers.values():
+                    data_center.Flush()
                 data_centers, _, _ = select(self.data_centers.values(), (), (), timer.GetTimeout())
                 for data_center in data_centers:
                     data_center.process()
                 timer.Process()
-                for data_center in self.data_centers.values():
-                    data_center.Flush()
             except ConnectionError:
                 # TODO: reconnect
                 break

@@ -3,6 +3,7 @@
 from time import time as Now
 from algorithm import Treap
 import logging
+import datetime
 
 class Timer:
     def __init__(self):
@@ -15,6 +16,7 @@ class Timer:
     
     def Set(self, timer_id, time, interval, callback, *args, **kwargs):
         self.treap.Update(timer_id, (time, interval, callback, args, kwargs))
+        logging.log(5, "timer #{} is reset to \"{}\" (interval: {} seconds)".format(timer_id, datetime.datetime.fromtimestamp(time), interval or 0))
         
     def Reset(self, timer_id):
         self.treap.Remove(timer_id)

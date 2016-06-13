@@ -72,7 +72,7 @@ class CryptoSession(TcpSession):
     def __init__(self):
         super().__init__()
         self.session_id = random.getrandbits(64).to_bytes(8, 'big')
-        self.salt = None
+        self.salt = random.getrandbits(64).to_bytes(8, 'big')
         self.auth_key_id = None
         self.auth_key = None
     
