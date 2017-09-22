@@ -4,7 +4,6 @@ from time import time as Now
 from algorithm import Treap
 import logging
 import datetime
-from test.test_zipfile64 import OtherTests
 
 class Timer:
     def __init__(self, id, name, clock):

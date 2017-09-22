@@ -1,5 +1,4 @@
 import yaml
-from pathlib import Path
 
 class Config:
     def __init__(self, data=None, parent=None):
@@ -13,6 +12,7 @@ class Config:
     
     def __setitem__(self, key, value):
         self.data[key] = value
+        self.save()
     
     def __delitem__(self, key):
         del self.data[key]
