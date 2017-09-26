@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import re
 from time import time as Now
 from collections import OrderedDict
@@ -20,6 +21,7 @@ import timer
 
 
 VERSION = '1.0.0'
+TRACE = 5
 
 
 class DataSession(CryptoSession):
@@ -90,8 +92,8 @@ class DataCenter:
         self.on_ready = on_ready
 
     def Connect(self, test=False):
-        host = self.config['host']
-        port = self.config['port']
+        host = self.config.get('host')
+        port = self.config.get('port')
         self.session.Connect(host, port)
 
         if test or 'auth_key' not in self.config:
@@ -422,10 +424,10 @@ class Telegram:
             logging.exception('Server public key is missing!')
             return
         
-        dc_id = list(self.config['data_centers'].keys())[0]
+        dc_id = list(self.config.setdefault('data_centers', {1: {'host': '149.154.175.10', 'port': 443}}).keys())[0]
         data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key);
         self.data_centers[dc_id] = data_center
-        data_center.Connect(self.config['test'])
+        data_center.Connect(self.config.get('test', False))
 
         while True:
             try:
@@ -453,7 +455,7 @@ class Telegram:
                 return
             data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key)
             self.data_centers[dc_id] = data_center
-            data_center.Connect(self.config['test'])
+            data_center.Connect(self.config.get('test', False))
         return self.data_centers[dc_id]
 
     def rpc_callback(self, dc, request, result):

@@ -32,6 +32,18 @@ class Config:
     def __getattr__(self, name):
         return getattr(self.data, name)
     
+    def get(self, key, default=None):
+        data = self.data.get(key, default)
+        if isinstance(data, (dict, list)):
+            return Config(data=data, parent=self)
+        return data
+    
+    def setdefault(self, key, default=None):
+        data = self.data.setdefault(key, default)
+        if isinstance(data, (dict, list)):
+            return Config(data=data, parent=self)
+        return data
+    
     def load(self, path):
         with open(path, 'r') as config_file:
             data = yaml.load(config_file.read())
