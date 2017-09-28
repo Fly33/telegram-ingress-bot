@@ -17,7 +17,7 @@ from format import *
 from session import CryptoSession
 from algorithm import *
 from error import *
-import timer
+from timer import Clock
 
 
 VERSION = '1.0.0'
@@ -74,10 +74,11 @@ def Hex(data):
 
 
 class DataCenter:
-    def __init__(self, id, config, public_key, on_ready): # TODO: выпилить application
+    def __init__(self, id, config, public_key, clock, on_ready): # TODO: выпилить application
         self.id = id
-        self.ping_timer = timer.New("DC{}:ping".format(id))
-        self.salt_timer = timer.New("DC{}:salt".format(id))
+        self.ping_timer = clock.New("DC{}:ping".format(id))
+        self.salt_timer = clock.New("DC{}:salt".format(id))
+        self.flush_timer = clock.New("DC{}:flush".format(id))
         self.message_id = 0
         self.n_relevant = 0
         self.time_offset = 0
@@ -90,6 +91,17 @@ class DataCenter:
         self.public_key = public_key
         self.ready = False
         self.on_ready = on_ready
+        self._authorised = True
+
+    def get_authorised(self):
+        return self._authorised
+
+    def set_authorised(self, authorised):
+        self._authorised = authorised
+        if authorised:
+            self.rpc_flush()
+
+    authorised = property(get_authorised, set_authorised)
 
     def Connect(self, test=False):
         host = self.config.get('host')
@@ -145,6 +157,7 @@ class DataCenter:
             self.sent_messages[msg_id] = data
         if encrypted:
             self.queue.append((msg_id, seq_no, data))
+            self.flush_timer.Set(Now(), 0, self.Flush)
             return
         return self._Send(msg_id, seq_no, data, encrypted)
 
@@ -338,25 +351,14 @@ class DataCenter:
 
 
 class ApplicationDataCenter(DataCenter):
-    def __init__(self, id, application, config, public_key):
+    def __init__(self, id, application, config, public_key, clock):
         self.application = application
         self.rpc_queue = []
-        self._authorised = True
-        super().__init__(id, config, public_key, self.dc_ready)
-
-    def get_authorised(self):
-        return self._authorised
-
-    def set_authorised(self, authorised):
-        self._authorised = authorised
-        if authorised:
-            self.rpc_flush()
+        super().__init__(id, config, public_key, clock, self.dc_ready)
 
     def rpc_flush(self):
         for request in self.rpc_queue:
             super().Call(request, self.rpc_callback)
-
-    authorised = property(get_authorised, set_authorised)
 
     def Call(self, request):
         # TODO: отложить запросы до возможности их исполнения
@@ -381,10 +383,11 @@ class ApplicationDataCenter(DataCenter):
 
 
 class InputThread(threading.Thread):
-    def __init__(self, prompt, callback):
+    def __init__(self, prompt, clock, callback):
         self.result = None
         self.prompt = prompt
         self.callback = callback
+        self.timer = clock.New("input")
         super().__init__()
 
     def run(self):
@@ -392,7 +395,6 @@ class InputThread(threading.Thread):
 
     def start(self):
         super().start()
-        self.timer = timer.New("input")
         self.timer_callback()
 
     def timer_callback(self):
@@ -403,20 +405,19 @@ class InputThread(threading.Thread):
         self.callback(self.result)
 
 
-def Input(prompt, callback):
-    input_thread = InputThread(prompt, callback)
+def Input(prompt, clock, callback):
+    input_thread = InputThread(prompt, clock, callback)
     input_thread.start()
 
 
 class Telegram:
     def __init__(self, config):
+        self.clock = Clock()
         self.config = config
         self.data_centers = {}
         self.ready = False
         self.nearest_dc = None
 
-    def Run(self):
-        # перенести?
         try:
             with open(self.config["public_key"], 'rb') as f:
                 self.public_key = f.read()
@@ -425,18 +426,17 @@ class Telegram:
             return
         
         dc_id = list(self.config.setdefault('data_centers', {1: {'host': '149.154.175.10', 'port': 443}}).keys())[0]
-        data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key);
+        data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key, self.clock);
         self.data_centers[dc_id] = data_center
         data_center.Connect(self.config.get('test', False))
 
+    def Run(self):
         while True:
             try:
-                for data_center in self.data_centers.values():
-                    data_center.Flush()
-                data_centers, _, _ = select(self.data_centers.values(), (), (), timer.GetTimeout())
+                self.clock.Process()
+                data_centers, _, _ = select(self.data_centers.values(), (), (), self.clock.GetTimeout())
                 for data_center in data_centers:
                     data_center.process()
-                timer.Process()
             except ConnectionError:
                 # TODO: reconnect
                 break
@@ -448,12 +448,12 @@ class Telegram:
         if not self.ready:
             dc.Call(help_getConfig.Create())
 
-    def data_center(self, dc_id):
+    def getDataCenter(self, dc_id):
         if dc_id not in self.data_centers:
             if dc_id not in self.config['data_centers']:
                 logging.error('Data center #{} is not found'.format(dc_id))
                 return
-            data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key)
+            data_center = ApplicationDataCenter(dc_id, self, self.config['data_centers'][dc_id], self.public_key, self.clock)
             self.data_centers[dc_id] = data_center
             data_center.Connect(self.config.get('test', False))
         return self.data_centers[dc_id]
@@ -467,7 +467,7 @@ class Telegram:
                 match = re.match(r'(\w+?(\d+))(?:: (.+))?', result.error_message)
                 if match:
                     dc_id = int(match.group(2))
-                    return self.data_center(dc_id).Call(request)
+                    return self.getDataCenter(dc_id).Call(request)
                 else:
                     logging.error('Unable to parse 303 error: {}'.format(result.error_message))
                     return
@@ -475,8 +475,8 @@ class Telegram:
                 # TODO: проверить, что авторизация ещё не начата
                 dc.authorised = False
                 dc.Call(request) # TODO: перепостить запрос
-                if dc.id != self.nearest_dc:
-                    return self.data_center(self.nearest_dc).Call(auth_exportAuthorization.Create(dc.id))
+                if self.nearest_dc is not None and dc.id != self.nearest_dc:
+                    return self.getDataCenter(self.nearest_dc).Call(auth_exportAuthorization.Create(dc.id))
                 if 'api_id' not in self.config or 'api_hash' not in self.config:
                     logging.error("Get api_id and api_hash from https://my.telegram.org/apps")
                     return
@@ -506,9 +506,9 @@ class Telegram:
 
     def rpc_auth_sendCode_result_auth_sentCode(self, dc, request, result):
         if result.phone_registered:
-            Input('Enter confirmation code: ', lambda phone_code: dc.Call(auth_signIn.Create(self.config['profile']['phone_number'], result.phone_code_hash, phone_code)))
+            Input('Enter confirmation code: ', self.clock, lambda phone_code: dc.Call(auth_signIn.Create(self.config['profile']['phone_number'], result.phone_code_hash, phone_code)))
         else:
-            Input('Enter confirmation code: ', lambda phone_code: dc.Call(auth_signUp.Create(self.config['profile']['phone_number'], result.phone_code_hash, phone_code, self.config['profile'].get('first_name', 'Unknown'), self.config['profile'].get('last_name', 'Bot'))))
+            Input('Enter confirmation code: ', self.clock, lambda phone_code: dc.Call(auth_signUp.Create(self.config['profile']['phone_number'], result.phone_code_hash, phone_code, self.config['profile'].get('first_name', 'John'), self.config['profile'].get('last_name', 'Doe'))))
 
     def rpc_auth_exportAuthorization_result_auth_exportedAuthorization(self, dc, request, result):
         self.data_centers[request.dc_id].Call(auth_importAuthorization.Create(result.id, result.bytes))
