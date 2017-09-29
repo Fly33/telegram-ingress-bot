@@ -431,18 +431,27 @@ class Telegram:
         data_center.Connect(self.config.get('test', False))
 
     def Run(self):
-        while True:
-            try:
-                self.clock.Process()
-                data_centers, _, _ = select(self.data_centers.values(), (), (), self.clock.GetTimeout())
-                for data_center in data_centers:
-                    data_center.process()
-            except ConnectionError:
-                # TODO: reconnect
-                break
-            except:
-                logging.exception("The game is up!")
-                break # TODO: может что-нить поумнее сделать?
+        while self.Step():
+            pass
+
+    def Step(self):
+        try:
+            self.clock.Process()
+            data_centers, _, _ = select(self.data_centers.values(), (), (), self.clock.GetTimeout())
+            for data_center in data_centers:
+                data_center.process()
+            return True
+        except ConnectionError:
+            # TODO: reconnect
+            return False
+        except:
+            logging.exception("The game is up!")
+            return False # TODO: может что-нить поумнее сделать?
+
+#     def Call(self, request, callback=None):
+#         if callback:
+#             self.getDataCenter(self.nearest_dc).Call(request, callback)
+#         
 
     def dc_ready(self, dc):
         if not self.ready:
@@ -460,34 +469,34 @@ class Telegram:
 
     def rpc_callback(self, dc, request, result):
         if result.Name() == 'rpc_error':
-            error_handler = getattr(self, 'rpc_' + request.Name() + '_result_' + str(result.error_code), None) 
-            if error_handler: 
-                return error_handler(dc, request, result)
-            elif result.error_code == 303: # ERROR_SEE_OTHER
-                match = re.match(r'(\w+?(\d+))(?:: (.+))?', result.error_message)
-                if match:
-                    dc_id = int(match.group(2))
-                    return self.getDataCenter(dc_id).Call(request)
-                else:
-                    logging.error('Unable to parse 303 error: {}'.format(result.error_message))
-                    return
-            elif result.error_code == 401: # UNAUTHORIZED
-                # TODO: проверить, что авторизация ещё не начата
-                dc.authorised = False
-                dc.Call(request) # TODO: перепостить запрос
-                if self.nearest_dc is not None and dc.id != self.nearest_dc:
-                    return self.getDataCenter(self.nearest_dc).Call(auth_exportAuthorization.Create(dc.id))
-                if 'api_id' not in self.config or 'api_hash' not in self.config:
-                    logging.error("Get api_id and api_hash from https://my.telegram.org/apps")
-                    return
-                if 'profile' not in self.config or 'phone_number' not in self.config['profile']:
-                    logging.error('The config does not contain phone number')
-                    return
-                return dc.Call(auth_sendCode.Create(self.config['profile']['phone_number'], 0, int(self.config['api_id']), self.config['api_hash'], self.config.get('lang_code', 'en')))
-            else:
-                logging.error('Unhandled rpc error for "{}": {} {}'.format(request.Name(), result.error_code, result.error_message))
-                return
+            return getattr(self, 'rpc_error_' + str(result.error_code), self.rpc_unknown_error)(dc, request, result) 
         return getattr(self, 'rpc_' + request.Name() + '_result_' + result.Name(), self.rpc_unknown)(dc, request, result)
+
+    def rpc_error_303(self, dc, request, result):
+        match = re.match(r'(\w+?(\d+))(?:: (.+))?', result.error_message)
+        if not match:
+            logging.error('Unable to parse 303 error: {}'.format(result.error_message))
+            return
+        dc_id = int(match.group(2))
+        return self.getDataCenter(dc_id).Call(request)
+
+    def rpc_error_401(self, dc, request, result): # UNAUTHORIZED
+        # TODO: проверить, что авторизация ещё не начата
+        dc.authorised = False
+        dc.Call(request) # TODO: перепостить запрос
+        if self.nearest_dc is not None and dc.id != self.nearest_dc:
+            return self.getDataCenter(self.nearest_dc).Call(auth_exportAuthorization.Create(dc.id))
+        if 'api_id' not in self.config or 'api_hash' not in self.config:
+            logging.error("Get api_id and api_hash from https://my.telegram.org/apps")
+            return
+        if 'profile' not in self.config or 'phone_number' not in self.config['profile']:
+            logging.error('The config does not contain phone number')
+            return
+        return dc.Call(auth_sendCode.Create(self.config['profile']['phone_number'], 0, int(self.config['api_id']), self.config['api_hash'], self.config.get('lang_code', 'en')))
+
+    def rpc_unknown_error(self, dc, request, result):
+        logging.error('Unhandled rpc error for "{}": {} {}'.format(request.Name(), result.error_code, result.error_message))
+        return
 
     def rpc_unknown(self, dc, request, result):
         logging.error("There is no handler for request \"{}\" with result \"{}\"".format(request.Name(), result.Name()))
