@@ -1,6 +1,7 @@
 # -*- coding: utf8 -*-
 import logging
 import struct
+import gzip
 
 class Type:
     def __init__(self, name):
@@ -130,7 +131,7 @@ def VectorBox(tipe):
         @classmethod
         def Parse(cls, data, offset=0):
             reslen = 0
-            _, ln = Int.Parse(data, offset+reslen) # 0x1cb5c415
+            _, ln = Int.Parse(data, offset+reslen) # hash
             reslen += ln
             result, ln = super().Parse(data, offset+reslen)
             reslen += ln
@@ -138,7 +139,7 @@ def VectorBox(tipe):
         
         @classmethod
         def Dump(cls, value):
-            result = Int.Dump(0x1cb5c415)
+            result = Int.Dump(cls.Hash())
             result += super().Dump(value)
             return result
     
@@ -264,6 +265,25 @@ class Wrapper(Box, metaclass=BoxType):
         def Name(self):
             return self.query.Name()
 
+class GZipPacked(Type):
+    @classmethod
+    def Name(cls):
+        return 'gzip_packed' 
+
+    @classmethod
+    def Hash(cls):
+        return 0x3072cfa1
+
+    @classmethod
+    def Parse(cls, data, offset=0):
+        result, ln = Bytes.Parse(data, offset)
+        result, _ = Box.Parse(gzip.decompress(result), 0)
+        return (result, ln)
+
+    @classmethod
+    def Dump(cls, value):
+        return Bytes.Dump(gzip.compress(Box.Dump(value)))
+
 # MTProto 
 
 Box.Register('resPQ', 0x05162463, Int128('nonce'), Int128('server_nonce'), BigInt('pq'), VectorBox(Long)('server_public_key_fingerprints'))
@@ -301,7 +321,9 @@ Box.Register('new_session_created', 0x9ec20908, Long('first_msg_id'), Long('uniq
 Box.Register('message', 0x5bb8e511, Long('msg_id'), Int('seqno'), MesuredBox('body'))
 Box.Register('msg_container', 0x73f1f8dc, Vector(message)('messages'))
 Box.Register('msg_copy', 0xe06046b2, Box('orig_message'))
-Box.Register('gzip_packed', 0x3072cfa1, String('packed_data'))
+
+Box[GZipPacked.Hash()] = GZipPacked
+Box[GZipPacked.Name()] = GZipPacked 
 
 # service messages about messages
 
