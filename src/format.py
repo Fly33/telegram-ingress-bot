@@ -98,6 +98,14 @@ def Tuple(*class_arg):
 def Vector(tipe):
     class vector_cl(Type):
         @classmethod
+        def Name(cls):
+            return 'vector'
+        
+        @classmethod
+        def Hash(cls):
+            return 0x1cb5c415
+        
+        @classmethod
         def Parse(cls, data, offset=0):
             result = []
             reslen = 0
@@ -118,32 +126,20 @@ def Vector(tipe):
                 
     return vector_cl
 
+VectorBoxCash = {}
+
 def VectorBox(tipe):
-    class vector_cl(Vector(tipe)):
-        @classmethod
-        def Name(cls):
-            return 'vector'
+    if tipe not in VectorBoxCash:
+        class vector_box(Box):
+            vector_cls = Vector(tipe)
+            @classmethod
+            def Dump(cls, value):
+                return Int.Dump(cls.vector_cls.Hash()) + cls.vector_cls.Dump(value)
         
-        @classmethod
-        def Hash(cls):
-            return 0x1cb5c415
-        
-        @classmethod
-        def Parse(cls, data, offset=0):
-            reslen = 0
-            _, ln = Int.Parse(data, offset+reslen) # hash
-            reslen += ln
-            result, ln = super().Parse(data, offset+reslen)
-            reslen += ln
-            return (result, reslen)
-        
-        @classmethod
-        def Dump(cls, value):
-            result = Int.Dump(cls.Hash())
-            result += super().Dump(value)
-            return result
-    
-    return vector_cl
+        vector_box[Vector(tipe).Hash()] = Vector(tipe)
+        vector_box[Vector(tipe).Name()] = Vector(tipe) 
+        VectorBoxCash[tipe] = vector_box
+    return VectorBoxCash[tipe]
 
 class BoxType(type):
     def __init__(self, *args, **kwargs):
@@ -413,8 +409,8 @@ for type_name in (
     globals()[type_name] = custom_box
 
 
-Box[VectorBox(Box).Hash()] = VectorBox(Box)
-Box[VectorBox(Box).Name()] = VectorBox(Box) 
+Box[Vector(Box).Hash()] = Vector(Box)
+Box[Vector(Box).Name()] = Vector(Box) 
 
 Bool.Register('boolFalse', 0xbc799737)
 Bool.Register('boolTrue', 0x997275b5)
