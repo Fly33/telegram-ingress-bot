@@ -1,13 +1,13 @@
 import logging
 import logging.handlers
 import re
-from time import time as Now
+from time import time as Now, mktime, localtime
 from collections import OrderedDict
 from select import select
 import threading
 import platform
 import sys
-import datetime
+from datetime import datetime
 import rsa
 from Crypto.Cipher import XOR
 from Crypto.Random import random
@@ -313,7 +313,7 @@ class DataCenter:
     def process_future_salts(self, msg_id, seq_no, data):
         self.time_offset = data.now - Now()
         for future_salt in data.salts:
-            logging.info("Salt: {}; Valid: {} - {}".format(future_salt.salt, datetime.datetime.fromtimestamp(future_salt.valid_since), datetime.datetime.fromtimestamp(future_salt.valid_until)))
+            logging.info("Salt: {}; Valid: {} - {}".format(future_salt.salt, datetime.fromtimestamp(future_salt.valid_since), datetime.fromtimestamp(future_salt.valid_until)))
         self.session.salt = Long.Dump(data.salts[0].salt)
         self.salt_timer.Set(future_salt.valid_until, 0, lambda: self.Send(get_future_salts.Create(1), relevant=False))
         if not self.ready:
@@ -414,6 +414,10 @@ class Telegram:
         self.data_centers = {}
         self.ready = False
         self.nearest_dc = None
+        # TODO: убрать
+        self.pts = 1 # self.config.get('pts', 0) # persistent time stamp
+        self.qts = 0 # self.config.get('qts', 0)
+        self.date = int(mktime(localtime())) # self.config.get('data', int(mktime(localtime())))
 
         try:
             with open(self.config["public_key"], 'rb') as f:
@@ -423,9 +427,7 @@ class Telegram:
             return
         
         dc_id = list(self.config.setdefault('data_centers', {1: {'host': '149.154.175.10', 'port': 443}}).keys())[0]
-        data_center = DataCenter(dc_id, self.config['data_centers'][dc_id], self.config['api_id'], self.config.get('lang_code', 'en'), self.public_key, self.clock);
-        self.data_centers[dc_id] = data_center
-        data_center.Connect(self.dc_ready, self.config.get('test', False))
+        self.getDataCenter(dc_id) # подключаемся
 
     def Run(self):
         while self.Step():
@@ -445,10 +447,8 @@ class Telegram:
             logging.exception("The game is up!")
             return False # TODO: может что-нить поумнее сделать?
 
-#     def Call(self, request, callback=None):
-#         if callback:
-#             self.getDataCenter(self.nearest_dc).Call(request, callback)
-#         
+    def Call(self, request):
+        self.nearest_dc.Call(request, self.rpc_callback)
 
     def dc_ready(self, dc):
         if not self.ready:
@@ -460,6 +460,8 @@ class Telegram:
                 logging.error('Data center #{} is not found'.format(dc_id))
                 return
             data_center = DataCenter(dc_id, self.config['data_centers'][dc_id], self.config['api_id'], self.config.get('lang_code', 'en'), self.public_key, self.clock)
+            for method in ('process_updatesTooLong', 'process_updateShortMessage', 'process_updateShortChatMessage', 'process_updateShort', 'process_updatesCombined', 'process_updates'):
+                setattr(data_center, method, getattr(self, method))
             self.data_centers[dc_id] = data_center
             data_center.Connect(self.dc_ready, self.config.get('test', False))
         return self.data_centers[dc_id]
@@ -481,8 +483,8 @@ class Telegram:
         # TODO: проверить, что авторизация ещё не начата
         dc.authorised = False
         dc.Call(request, self.rpc_callback) # TODO: перепостить запрос
-        if self.nearest_dc is not None and dc.id != self.nearest_dc:
-            return self.getDataCenter(self.nearest_dc).Call(auth_exportAuthorization.Create(dc.id), self.rpc_callback)
+        if self.nearest_dc is not None and dc.id != self.nearest_dc.id:
+            return self.nearest_dc.Call(auth_exportAuthorization.Create(dc.id), self.rpc_callback)
         if 'api_id' not in self.config or 'api_hash' not in self.config:
             logging.error("Get api_id and api_hash from https://my.telegram.org/apps")
             return
@@ -506,9 +508,9 @@ class Telegram:
         dc.Call(help_getNearestDc.Create(), self.rpc_callback)
 
     def rpc_help_getNearestDc_result_nearestDc(self, dc, request, result):
-        self.nearest_dc = result.nearest_dc
+        self.nearest_dc = self.getDataCenter(result.nearest_dc)
         self.ready = True
-        dc.Call(account_updateStatus.Create(False), self.rpc_callback)
+        self.Call(account_updateStatus.Create(False)) # проверяем авторизацию
 
     def rpc_auth_sendCode_result_auth_sentCode(self, dc, request, result):
         if result.phone_registered:
@@ -527,3 +529,34 @@ class Telegram:
 
     def rpc_auth_importAuthorization_result_auth_authorization(self, dc, request, result):
         dc.authorised = True
+
+    def rpc_account_updateStatus_result_boolFalse(self, dc, request, result):
+        self.Call(updates_getDifference.Create(self.pts, self.date, self.qts))
+
+    def rpc_updates_getDifference_result_updates_differenceEmpty(self, dc, request, result):
+        pass
+
+    def rpc_updates_getDifference_result_updates_difference(self, dc, request, result):
+        pass
+
+    def rpc_updates_getDifference_result_updates_differenceSlice(self, dc, request, result):
+        pass
+
+    def process_updatesTooLong(self, dc, request, result):
+        self.Call(updates_getDifference.Create(self.pts, self.date, self.qts))
+
+    def process_updateShortMessage(self, dc, request, result):
+        pass
+
+    def process_updateShortChatMessage(self, dc, request, result):
+        pass
+
+    def process_updateShort(self, dc, request, result):
+        pass
+
+    def process_updatesCombined(self, dc, request, result):
+        pass
+
+    def process_updates(self, dc, request, result):
+        pass
+
