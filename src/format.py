@@ -78,10 +78,19 @@ def Tuple(*class_arg):
         def Parse(cls, data, offset=0):
             result = []
             reslen = 0
+            skipped_fields = set()
             for t in class_arg:
+                if t.name in skipped_fields:
+                    result.append(None)
+                    continue
                 dt, ln = t.Parse(data, offset+reslen)
-                result.append(dt)
                 reslen += ln
+                if isinstance(t, FlagsBase):
+                    for i, field in enumerate(t.fields):
+                        if not ((dt >> i) & 1):
+                            skipped_fields.add(field)
+                    continue
+                result.append(dt)
             return (tuple(result), reslen)
         
         @classmethod
@@ -89,7 +98,20 @@ def Tuple(*class_arg):
 #             if len(values) == 1 and isinstance(values[0], tuple):
 #                 return cls.Dump(*values[0])
             result = b''
+            values = list(values)
+            for i, t in enumerate(class_arg):
+                if not isinstance(t, FlagsBase):
+                    continue
+                values[i:i] = [0]
             for arg, value in zip(class_arg, values):
+                if isinstance(arg, FlagsBase):
+                    for j, field in enumerate(arg.fields):
+                        for t, v in zip(class_arg, values):
+                            if t.name != field:
+                                continue
+                            if v is not None:
+                                value = value | (1 << j) 
+                            break
                 result += arg.Dump(value)
             return result
         
@@ -279,6 +301,24 @@ class GZipPacked(Type):
     @classmethod
     def Dump(cls, value):
         return Bytes.Dump(gzip.compress(Box.Dump(value)))
+
+class FlagsBase(Int):
+    pass
+
+def Flags(*fields):
+    class flags_cl(FlagsBase):
+        fields = fields
+
+    return flags_cl
+
+class Flag(Type):
+    @classmethod
+    def Parse(cls, data, offset=0):
+        return (True, 0)
+    
+    @classmethod
+    def Dump(cls, value):
+        return b'' 
 
 # MTProto 
 
